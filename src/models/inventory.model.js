@@ -67,14 +67,6 @@ const inventorySchema = new mongoose.Schema(
       type: Number,
       required: [true, "Selling price is required"],
       min: [0, "Selling price cannot be negative"],
-      validate: {
-        validator: function (value) {
-          // Selling price should typically be >= buying price
-          return value >= this.buyingPrice;
-        },
-        message:
-          "Selling price should be greater than or equal to buying price",
-      },
     },
     unitOfMeasure: {
       type: String,

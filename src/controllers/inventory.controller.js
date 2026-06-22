@@ -389,26 +389,6 @@ export const updateInventory = asyncErrorHandler(async (req, res, next) => {
     }
   }
 
-  // Validate sellingPrice >= buyingPrice
-  // Merge updateData with existing data to get the final values
-  const finalBuyingPrice =
-    updateData.buyingPrice !== undefined
-      ? updateData.buyingPrice
-      : existingInventory.buyingPrice;
-  const finalSellingPrice =
-    updateData.sellingPrice !== undefined
-      ? updateData.sellingPrice
-      : existingInventory.sellingPrice;
-
-  if (finalSellingPrice < finalBuyingPrice) {
-    return next(
-      new CustomError(
-        400,
-        `Selling price (${finalSellingPrice}) should be greater than or equal to buying price (${finalBuyingPrice})`,
-      ),
-    );
-  }
-
   // Handle ecommerceMaxPerUser with unit conversion
   if (updateData.ecommerceMaxPerUser !== undefined && updateData.limitUnit) {
     const unit = String(updateData.limitUnit).trim().toLowerCase();
@@ -526,10 +506,6 @@ export const importInventoryFromExcel = asyncErrorHandler(
         if (isNaN(numSellingPrice) || numSellingPrice < 0) {
           throw new Error("Selling price must be a valid non-negative number");
         }
-        if (numSellingPrice < numBuyingPrice) {
-          throw new Error("Selling price must be >= buying price");
-        }
-
         const existingProduct = await Inventory.findOne({
           productCode: String(productCode).toUpperCase(),
         });
@@ -737,11 +713,6 @@ export const importUpdateInventoryFromExcel = asyncErrorHandler(
         }
         if (row.unitOfMeasure || row.unit_of_measure || row["Unit of Measure"]) {
           existingItem.unitOfMeasure = String(row.unitOfMeasure || row.unit_of_measure || row["Unit of Measure"]).trim();
-        }
-
-        // Validate sellingPrice >= buyingPrice
-        if (existingItem.sellingPrice < existingItem.buyingPrice) {
-          throw new Error(`Selling price (${existingItem.sellingPrice}) must be >= buying price (${existingItem.buyingPrice})`);
         }
 
         // Parse wholesale prices (same logic as import)
