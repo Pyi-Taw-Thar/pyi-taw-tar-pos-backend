@@ -286,12 +286,14 @@ export const getAllStorefrontInventory = asyncErrorHandler(
           "inventoryId.productName": 1,
           "inventoryId.productCode": 1,
           "inventoryId.SKU": 1,
+          "inventoryId.brand": 1,
           "inventoryId.category": 1,
           "inventoryId.sellingPrice": 1,
           "inventoryId.barcode": 1,
           "inventoryId.status": 1,
           "inventoryId.unitOfMeasure": 1,
           "inventoryId.uomConversions": 1,
+          "inventoryId.wholesalePrices": 1,
           "inventoryId.ecommerceMaxPerUser": 1,
           "inventoryId.ecommercePurchaseResetMode": 1,
           "inventoryId.ecommercePurchaseResetDays": 1,
@@ -411,7 +413,7 @@ export const getStorefrontInventoryById = asyncErrorHandler(
     const stock = await StorefrontInventory.findById(id)
       .populate(
         "inventoryId",
-        "productName productCode SKU category buyingPrice sellingPrice barcode status unitOfMeasure uomConversions",
+        "productName productCode SKU brand category buyingPrice sellingPrice barcode status unitOfMeasure uomConversions wholesalePrices",
       )
       .populate("storefrontId", "locationName locationCode locationAddress");
 
