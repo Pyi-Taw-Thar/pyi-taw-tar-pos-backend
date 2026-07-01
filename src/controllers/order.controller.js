@@ -10,6 +10,20 @@ import CustomError from "../utils/customError.js";
 import { createDateFilter } from "../utils/dateFilter.utils.js";
 import { logActivity } from "../services/activityLog.service.js";
 
+// Helper: find best matching wholesale price by unit and quantity threshold
+// Sorts by quantity descending so the highest qualifying threshold wins
+const findWholesalePrice = (wholesalePrices, unit, quantity) => {
+  if (!wholesalePrices?.length) return null;
+  const sorted = [...wholesalePrices].sort((a, b) => b.quantity - a.quantity);
+  const match = sorted.find((wp) => {
+    const unitMatch =
+      !wp.unit || (unit && wp.unit.toLowerCase() === unit.toLowerCase());
+    const qtyMatch = quantity >= wp.quantity;
+    return unitMatch && qtyMatch;
+  });
+  return match ? match.price : null;
+};
+
 // Create new order with ACID properties and stock deduction
 export const createOrder = asyncErrorHandler(async (req, res, next) => {
   const {
@@ -282,7 +296,17 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
               }
             }
 
-            const unitPrice = (isDirectSale && product.unitPrice != null) ? product.unitPrice : inventoryItem.sellingPrice * factor;
+            let unitPrice;
+            if (isDirectSale && product.unitPrice != null) {
+              unitPrice = product.unitPrice;
+            } else {
+              const wholesalePrice = findWholesalePrice(
+                inventoryItem.wholesalePrices,
+                unit,
+                product.quantity,
+              );
+              unitPrice = wholesalePrice ?? (inventoryItem.sellingPrice * factor);
+            }
             const productSubTotal = product.quantity * unitPrice;
             calculatedSubTotal += productSubTotal;
 
@@ -1101,7 +1125,12 @@ export const addOrderItems = asyncErrorHandler(async (req, res, next) => {
           }
         }
 
-        const unitPrice = inventoryItem.sellingPrice * factor;
+        const wholesalePrice = findWholesalePrice(
+          inventoryItem.wholesalePrices,
+          unit,
+          item.quantity,
+        );
+        const unitPrice = wholesalePrice ?? (inventoryItem.sellingPrice * factor);
 
         // Check if item already exists in order
         const existingItemIndex = order.ordersProducts.findIndex(
