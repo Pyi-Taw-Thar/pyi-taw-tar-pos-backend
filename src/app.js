@@ -1,5 +1,7 @@
 import dns from "node:dns";
-dns.setServers(["1.1.1.1", "8.8.8.8"]);
+if (process.env.NODE_ENV !== "development") {
+  dns.setServers(["1.1.1.1", "8.8.8.8"]);
+}
 import dotenv from "dotenv";
 dotenv.config({ path: "./.env" });
 import express from "express";
