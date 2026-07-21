@@ -100,6 +100,11 @@ const PurchasingSchema = new mongoose.Schema(
       type: Number,
       required: true,
     },
+    paidAmount: {
+      type: Number,
+      default: 0,
+      min: [0, "Paid amount cannot be negative"],
+    },
     purchasedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Admin",
@@ -121,6 +126,12 @@ const PurchasingSchema = new mongoose.Schema(
     toObject: { virtuals: true },
   }
 );
+
+// Virtual for remaining balance (totalAmount - paidAmount)
+// Returns the amount still owed to the supplier for this PO
+PurchasingSchema.virtual("remainingBalance").get(function () {
+  return Math.max(0, (this.totalAmount || 0) - (this.paidAmount || 0));
+});
 
 // Static method to generate PO number
 // Format: PO-YYYY-MM-DD-NNNNNN (e.g., PO-2024-01-14-000001)
