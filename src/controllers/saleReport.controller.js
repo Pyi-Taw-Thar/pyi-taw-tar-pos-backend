@@ -4,7 +4,7 @@ import CustomError from "../utils/customError.js";
 import LocationProfile from "../models/locationProfile.model.js";
 import Order from "../models/orders.model.js";
 import CreditRecord from "../models/creditRecord.model.js";
-import CreditPerson from "../models/creditPersona.model.js";
+import Customer from "../models/customer.model.js";
 import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 import { createDateFilter } from "../utils/dateFilter.utils.js";
 
@@ -919,7 +919,7 @@ export const getCreditPersonaProductReport = asyncErrorHandler(
     }
 
     // Validate credit persona exists
-    const creditPersona = await CreditPerson.findOne({
+    const creditPersona = await Customer.findOne({
       _id: creditPersonaId,
     });
 
@@ -1209,17 +1209,17 @@ export const getSaleProductsAnalyticsByCreditPerson = asyncErrorHandler(
           },
           totalQuantity: { $sum: "$totalQuantity" }, // Total quantity across all credit persons
           totalOrders: { $sum: "$orderCount" }, // Total orders across all credit persons
-          uniqueCreditPersons: { $addToSet: "$_id.creditPersonId" }, // Count unique credit persons
+          uniqueCustomers: { $addToSet: "$_id.creditPersonId" }, // Count unique credit persons
           productName: { $first: "$productName" },
           productCode: { $first: "$productCode" },
           SKU: { $first: "$SKU" },
           unitOfMeasure: { $first: "$unitOfMeasure" },
         },
       },
-      // Calculate uniqueCreditPersons count
+      // Calculate uniqueCustomers count
       {
         $addFields: {
-          uniqueCreditPersonsCount: { $size: "$uniqueCreditPersons" },
+          uniqueCustomersCount: { $size: "$uniqueCustomers" },
         },
       },
       // Sort by total quantity descending
@@ -1258,22 +1258,22 @@ export const getSaleProductsAnalyticsByCreditPerson = asyncErrorHandler(
           brand: "$inventory.brand",
           totalQuantity: 1,
           totalOrders: 1,
-          uniqueCreditPersonsCount: 1,
+          uniqueCustomersCount: 1,
           creditPersons: 1,
         },
       },
     ]);
 
     // Now fetch credit person details separately and merge
-    const allCreditPersonIds = new Set();
+    const allCustomerIds = new Set();
     productAnalytics.forEach((product) => {
       product.creditPersons.forEach((cp) => {
-        allCreditPersonIds.add(cp.creditPersonId);
+        allCustomerIds.add(cp.creditPersonId);
       });
     });
 
-    const creditPersonDetails = await CreditPerson.find({
-      _id: { $in: Array.from(allCreditPersonIds) },
+    const creditPersonDetails = await Customer.find({
+      _id: { $in: Array.from(allCustomerIds) },
     }).select("_id name phone");
 
     // Create a map for quick lookup
@@ -1305,14 +1305,14 @@ export const getSaleProductsAnalyticsByCreditPerson = asyncErrorHandler(
         acc.totalQuantity += item.totalQuantity;
         acc.totalOrders += item.totalOrders;
         acc.totalUniqueProducts += 1;
-        acc.totalUniqueCreditPersons += item.uniqueCreditPersonsCount;
+        acc.totalUniqueCustomers += item.uniqueCustomersCount;
         return acc;
       },
       {
         totalQuantity: 0,
         totalOrders: 0,
         totalUniqueProducts: 0,
-        totalUniqueCreditPersons: 0,
+        totalUniqueCustomers: 0,
       }
     );
 
@@ -1339,7 +1339,7 @@ export const getSaleProductsAnalyticsByCreditPerson = asyncErrorHandler(
           totalQuantity: totals.totalQuantity,
           totalOrders: totals.totalOrders,
           totalUniqueProducts: totals.totalUniqueProducts,
-          totalUniqueCreditPersons: totals.totalUniqueCreditPersons,
+          totalUniqueCustomers: totals.totalUniqueCustomers,
         },
         products: productAnalytics,
       },

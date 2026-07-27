@@ -3,7 +3,7 @@ import Order from "../models/orders.model.js";
 import StorefrontInventory from "../models/storefrontInventory.model.js";
 import LocationProfile from "../models/locationProfile.model.js";
 import Inventory from "../models/inventory.model.js";
-import CreditPerson from "../models/creditPersona.model.js";
+import Customer from "../models/customer.model.js";
 import CreditRecord from "../models/creditRecord.model.js";
 import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 import CustomError from "../utils/customError.js";
@@ -203,7 +203,7 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
           let creditPerson = null;
           if (creditPersonId) {
             creditPerson =
-              await CreditPerson.findById(creditPersonId).session(session);
+              await Customer.findById(creditPersonId).session(session);
 
             if (!creditPerson) {
               throw new CustomError(404, "Credit person not found");
@@ -718,7 +718,7 @@ export const updateOrderCreditPersonId = asyncErrorHandler(
 
         // 3. Validate credit person exists
         const creditPerson =
-          await CreditPerson.findById(creditPersonId).session(session);
+          await Customer.findById(creditPersonId).session(session);
 
         if (!creditPerson) {
           throw new CustomError(404, "Credit person not found");

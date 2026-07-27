@@ -3,6 +3,8 @@ import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 import CustomError from "../utils/customError.js";
 import { signToken } from "../services/jwtToken.service.js";
 import { TIER_KEYS } from "../constants/customerTiers.js";
+import mongoose from "mongoose";
+import XLSX from "xlsx";
 
 export const register = asyncErrorHandler(async (req, res, next) => {
   const { name, phone, password } = req.body;
@@ -191,5 +193,154 @@ export const updateCustomerByAdmin = asyncErrorHandler(async (req, res, next) =>
     success: true,
     message: "Customer updated successfully.",
     data: customer,
+  });
+});
+
+// ─── Credit Person Management ─────────────────────────────────────
+
+// Toggle customer as credit person (on/off)
+export const toggleCreditPersonStatus = asyncErrorHandler(async (req, res, next) => {
+  const { id } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return next(new CustomError(400, "Invalid customer ID format"));
+  }
+
+  const customer = await Customer.findById(id);
+  if (!customer) {
+    return next(new CustomError(404, "Customer not found"));
+  }
+
+  customer.isCreditPerson = !customer.isCreditPerson;
+  // If unmarking as credit person, clear blacklist too
+  if (!customer.isCreditPerson) {
+    customer.blacklist = false;
+    customer.blacklistReason = null;
+    customer.blacklistDate = null;
+  }
+  await customer.save();
+
+  res.status(200).json({
+    success: true,
+    message: customer.isCreditPerson
+      ? "Customer is now a credit person"
+      : "Credit person status removed",
+    data: customer,
+  });
+});
+
+// Update credit person blacklist status
+export const updateCreditPersonBlacklist = asyncErrorHandler(async (req, res, next) => {
+  const { id } = req.params;
+  const { blacklist, blacklistReason } = req.body;
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return next(new CustomError(400, "Invalid customer ID format"));
+  }
+
+  const customer = await Customer.findById(id);
+  if (!customer) {
+    return next(new CustomError(404, "Customer not found"));
+  }
+
+  customer.blacklist = blacklist;
+  customer.blacklistDate = blacklist ? new Date() : null;
+  customer.blacklistReason = blacklist ? (blacklistReason || null) : null;
+  await customer.save();
+
+  res.status(200).json({
+    success: true,
+    message: blacklist
+      ? "Customer has been blacklisted"
+      : "Customer removed from blacklist",
+    data: customer,
+  });
+});
+
+// Get all credit persons (for admin dropdown, etc.)
+export const getCreditPersonCustomers = asyncErrorHandler(async (req, res, next) => {
+  const creditPersons = await Customer.find({
+    isCreditPerson: true,
+    blacklist: { $ne: true },
+  }).select("name phone isCreditPerson blacklist");
+
+  res.status(200).json({
+    success: true,
+    data: creditPersons,
+  });
+});
+
+// ─── Excel Import ─────────────────────────────────────────────────
+
+// Import customers from Excel file (credit persons)
+// Expected columns: Name, ShortDesc, Phone, Address, IsCredit, CreditLimit, DueInDays, Township
+export const importCustomersFromExcel = asyncErrorHandler(async (req, res, next) => {
+  if (!req.file) {
+    return next(new CustomError(400, "Please upload an Excel file"));
+  }
+
+  const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
+  const sheetName = workbook.SheetNames[0];
+  const worksheet = workbook.Sheets[sheetName];
+  const rows = XLSX.utils.sheet_to_json(worksheet);
+
+  if (rows.length === 0) {
+    return next(new CustomError(400, "Excel file is empty"));
+  }
+
+  let created = 0;
+  let skipped = 0;
+  const errors = [];
+
+  for (const row of rows) {
+    try {
+      const name = (row.Name || "").toString().trim();
+      if (!name) {
+        skipped++;
+        continue;
+      }
+
+      // Check for duplicate by name (case-insensitive)
+      const existing = await Customer.findOne({
+        name: { $regex: `^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" },
+      });
+
+      if (existing) {
+        skipped++;
+        continue;
+      }
+
+      const customerData = {
+        name,
+        password: Math.random().toString(36).slice(2, 10),
+        isCreditPerson: true,
+      };
+
+      // Only include phone if present in Excel
+      if (row.Phone) {
+        let phone = row.Phone.toString().trim();
+        phone = phone.replace(/[^0-9]/g, "");
+        if (phone) {
+          customerData.phone = phone;
+        }
+      }
+
+      await Customer.create(customerData);
+
+      created++;
+    } catch (err) {
+      errors.push({ name: row.Name || "unknown", error: err.message });
+    }
+  }
+
+  res.status(200).json({
+    success: true,
+    message: `Import completed: ${created} created, ${skipped} skipped, ${errors.length} errors`,
+    data: {
+      total: rows.length,
+      created,
+      skipped,
+      errors: errors.length > 0 ? errors : undefined,
+    },
   });
 });

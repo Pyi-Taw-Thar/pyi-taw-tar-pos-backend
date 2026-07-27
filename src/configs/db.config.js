@@ -40,6 +40,37 @@ export const Db = async () => {
         );
       }
     }
+
+    // Drop old phone_1 unique index on customers collection (replaced with sparse)
+    // This allows multiple null/empty phone values for imported credit persons
+    try {
+      const customerCollection =
+        mongoose.connection.db.collection("customers");
+      const customerIndexes = await customerCollection.indexes();
+
+      const phoneIndex = customerIndexes.find(
+        (idx) => idx.key && idx.key.phone === 1 && idx.unique === true
+      );
+
+      if (phoneIndex) {
+        // Check if it's the old non-sparse index (no sparse property)
+        if (!phoneIndex.sparse) {
+          await customerCollection.dropIndex(phoneIndex.name);
+          console.log(
+            `✓ Dropped old phone_1 unique index on customers: ${phoneIndex.name}`
+          );
+        }
+      }
+    } catch (indexError) {
+      if (indexError.code === 27 || indexError.codeName === "IndexNotFound") {
+        // Index doesn't exist yet — Mongoose will create it with sparse: true
+      } else {
+        console.log(
+          "Note: Could not drop phone index:",
+          indexError.message
+        );
+      }
+    }
   } catch (error) {
     console.log("Database connection failed:", error.message);
     process.exit(1);

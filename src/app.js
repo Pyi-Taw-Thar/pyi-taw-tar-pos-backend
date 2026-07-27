@@ -1,5 +1,5 @@
 import dns from "node:dns";
-if (process.env.NODE_ENV !== "development") {
+if (process.env.NODE_ENV === "development") {
   dns.setServers(["1.1.1.1", "8.8.8.8"]);
 }
 import dotenv from "dotenv";

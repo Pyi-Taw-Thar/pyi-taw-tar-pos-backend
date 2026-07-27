@@ -71,7 +71,7 @@ const orderSchema = new mongoose.Schema(
     },
     creditPersonId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "CreditPerson",
+      ref: "Customer",
       default: null,
     },
     subTotal: {

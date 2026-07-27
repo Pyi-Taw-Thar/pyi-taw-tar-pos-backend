@@ -17,8 +17,8 @@ const customerSchema = new mongoose.Schema({
   },
   phone: {
     type: String,
-    required: [true, "Phone number is required"],
     unique: true,
+    sparse: true,
     trim: true,
   },
   password: {
@@ -39,6 +39,24 @@ const customerSchema = new mongoose.Schema({
       message: "Tier must be one of: " + TIER_KEYS.join(", "),
     },
     default: "standard",
+  },
+
+  // Credit Person fields (merged from CreditPerson schema)
+  isCreditPerson: {
+    type: Boolean,
+    default: false,
+  },
+  blacklist: {
+    type: Boolean,
+    default: false,
+  },
+  blacklistReason: {
+    type: String,
+    default: null,
+  },
+  blacklistDate: {
+    type: Date,
+    default: null,
   },
 }, { timestamps: true });
 
