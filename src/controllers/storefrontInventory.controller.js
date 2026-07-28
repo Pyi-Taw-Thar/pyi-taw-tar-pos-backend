@@ -6,10 +6,8 @@ import CustomError from "../utils/customError.js";
 import mongoose from "mongoose";
 import { logActivity } from "../services/activityLog.service.js";
 import XLSX from "xlsx";
-import {
-  createStockAuditLog,
-  determineActionType,
-} from "../services/stockAuditLog.service.js";
+import { createStockAuditLog, determineActionType } from "../services/stockAuditLog.service.js";
+import { getEffectiveFactor } from "../utils/uom.utils.js";
 
 const parseExcelRowProductCode = (row) =>
   row.productCode || row.product_code || row["Product Code"];
@@ -533,7 +531,11 @@ export const updateStorefrontInventoryQuantity = asyncErrorHandler(
               ),
             );
           }
-          baseQuantityChange = quantityChange * conversion.factor;
+          baseQuantityChange = quantityChange * getEffectiveFactor(
+            inventoryItem.uomConversions,
+            inventoryItem.unitOfMeasure || "piece",
+            conversion.unit
+          );
           displayUnit = unit;
         }
       }

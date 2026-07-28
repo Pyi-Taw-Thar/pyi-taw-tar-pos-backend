@@ -5,6 +5,7 @@ import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 import CustomError from "../utils/customError.js";
 import { createDateFilter } from "../utils/dateFilter.utils.js";
 import { logActivity } from "../services/activityLog.service.js";
+import { getEffectiveFactor } from "../utils/uom.utils.js";
 
 // ============================================================
 // Create Quotation — same body as createOrder, NO side effects
@@ -90,7 +91,7 @@ export const createQuotation = asyncErrorHandler(async (req, res, next) => {
         (c) => c.unit?.toLowerCase() === String(product.unit).toLowerCase(),
       );
       if (conversion) {
-        factor = conversion.factor;
+        factor = getEffectiveFactor(invItem.uomConversions, invItem.unitOfMeasure || "piece", conversion.unit);
         unit = conversion.unit;
         baseQuantity = product.quantity * factor;
       }

@@ -89,6 +89,11 @@ const inventorySchema = new mongoose.Schema(
           type: Boolean,
           default: false,
         },
+        convertFrom: {
+          type: String,
+          default: null,
+          trim: true,
+        },
       }],
       _id: false,
     },
@@ -244,6 +249,37 @@ inventorySchema.pre("save", function () {
       const baseLower = this.unitOfMeasure.toLowerCase();
       if (units.includes(baseLower)) {
         throw new Error(`Conversion unit cannot be the same as the base unit "${this.unitOfMeasure}"`);
+      }
+    }
+
+    // Validate convertFrom references
+    const unitNames = new Set(units);
+    for (const conv of this.uomConversions) {
+      if (conv.convertFrom) {
+        const cfLower = conv.convertFrom.toLowerCase();
+        const baseLower = this.unitOfMeasure?.toLowerCase();
+        if (cfLower !== baseLower && !unitNames.has(cfLower)) {
+          throw new Error(`convertFrom unit "${conv.convertFrom}" not found for conversion "${conv.unit}". Must be base unit or another conversion unit.`);
+        }
+      }
+    }
+
+    // Check for circular references in convertFrom chain
+    for (const conv of this.uomConversions) {
+      if (conv.convertFrom) {
+        const visited = new Set();
+        let current = conv.unit.toLowerCase();
+        while (current) {
+          if (visited.has(current)) {
+            throw new Error(`Circular reference detected in UOM conversions involving unit "${conv.unit}"`);
+          }
+          visited.add(current);
+          const next = this.uomConversions.find(
+            (c) => c.unit?.toLowerCase() === current
+          );
+          if (!next || !next.convertFrom) break;
+          current = next.convertFrom.toLowerCase();
+        }
       }
     }
   }

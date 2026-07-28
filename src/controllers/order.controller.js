@@ -3,6 +3,7 @@ import Order from "../models/orders.model.js";
 import StorefrontInventory from "../models/storefrontInventory.model.js";
 import LocationProfile from "../models/locationProfile.model.js";
 import Inventory from "../models/inventory.model.js";
+import { getEffectiveFactor } from "../utils/uom.utils.js";
 import Customer from "../models/customer.model.js";
 import CreditRecord from "../models/creditRecord.model.js";
 import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
@@ -286,12 +287,14 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
             let baseQuantity = product.quantity;
 
             if (product.unit && inventoryItem.uomConversions?.length > 0) {
-              const conversion = inventoryItem.uomConversions.find(
-                (c) => c.unit?.toLowerCase() === String(product.unit).toLowerCase(),
+              const baseUnit = inventoryItem.unitOfMeasure || "piece";
+              const selectedUnit = String(product.unit).toLowerCase();
+              const conv = inventoryItem.uomConversions.find(
+                (c) => c.unit?.toLowerCase() === selectedUnit,
               );
-              if (conversion) {
-                factor = conversion.factor;
-                unit = conversion.unit;
+              if (conv) {
+                factor = getEffectiveFactor(inventoryItem.uomConversions, baseUnit, conv.unit);
+                unit = conv.unit;
                 baseQuantity = product.quantity * factor;
               }
             }
@@ -1082,11 +1085,13 @@ export const addOrderItems = asyncErrorHandler(async (req, res, next) => {
         let factor = 1;
         let baseQuantity = item.quantity;
         if (item.unit && inventoryItem.uomConversions?.length > 0) {
-          const conversion = inventoryItem.uomConversions.find(
-            (c) => c.unit?.toLowerCase() === String(item.unit).toLowerCase(),
+          const baseUnit = inventoryItem.unitOfMeasure || "piece";
+          const selectedUnit = String(item.unit).toLowerCase();
+          const conv = inventoryItem.uomConversions.find(
+            (c) => c.unit?.toLowerCase() === selectedUnit,
           );
-          if (conversion) {
-            factor = conversion.factor;
+          if (conv) {
+            factor = getEffectiveFactor(inventoryItem.uomConversions, baseUnit, conv.unit);
             baseQuantity = item.quantity * factor;
           }
         }
@@ -1115,12 +1120,14 @@ export const addOrderItems = asyncErrorHandler(async (req, res, next) => {
         let unit = item.unit || inventoryItem.unitOfMeasure || null;
         let baseQuantity = item.quantity;
         if (item.unit && inventoryItem.uomConversions?.length > 0) {
-          const conversion = inventoryItem.uomConversions.find(
-            (c) => c.unit?.toLowerCase() === String(item.unit).toLowerCase(),
+          const baseUnit = inventoryItem.unitOfMeasure || "piece";
+          const selectedUnit = String(item.unit).toLowerCase();
+          const conv = inventoryItem.uomConversions.find(
+            (c) => c.unit?.toLowerCase() === selectedUnit,
           );
-          if (conversion) {
-            factor = conversion.factor;
-            unit = conversion.unit;
+          if (conv) {
+            factor = getEffectiveFactor(inventoryItem.uomConversions, baseUnit, conv.unit);
+            unit = conv.unit;
             baseQuantity = item.quantity * factor;
           }
         }

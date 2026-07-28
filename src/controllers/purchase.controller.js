@@ -5,6 +5,7 @@ import CustomError from "../utils/customError.js";
 import Inventory from "../models/inventory.model.js";
 import { logActivity } from "../services/activityLog.service.js";
 import { createDateFilter } from "../utils/dateFilter.utils.js";
+import { getEffectiveFactor } from "../utils/uom.utils.js";
 
 export const createPurchase = asyncErrorHandler(async (req, res, next) => {
   const { supplierId, products, note, totalAmount } = req.body;
@@ -55,7 +56,11 @@ export const createPurchase = asyncErrorHandler(async (req, res, next) => {
               `Invalid unit '${unit}' for product '${inventoryItem.productCode}'. Valid units: ${validUnits.join(", ")}`,
             );
           }
-          baseQuantity = item.purchaseQuantity * conversion.factor;
+          baseQuantity = item.purchaseQuantity * getEffectiveFactor(
+            inventoryItem.uomConversions,
+            inventoryItem.unitOfMeasure || "piece",
+            conversion.unit
+          );
         }
       } else {
         baseQuantity = item.purchaseQuantity;

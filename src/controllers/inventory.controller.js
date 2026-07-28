@@ -625,6 +625,8 @@ export const importInventoryFromExcel = asyncErrorHandler(
             const entry = { unit: String(unit).trim(), factor: Number(factor) };
             const def = row[`uom_${t}_default`];
             if (def) entry.isDefaultSellingUnit = String(def).toLowerCase() === "true";
+            const convertFrom = row[`uom_${t}_convertFrom`];
+            if (convertFrom) entry.convertFrom = String(convertFrom).trim();
             uomConversions.push(entry);
           }
         }
