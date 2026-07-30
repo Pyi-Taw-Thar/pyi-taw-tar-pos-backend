@@ -118,7 +118,7 @@ export const createCreditPayment = asyncErrorHandler(async (req, res, next) => {
 
       // 8. Populate creditPersonId for response (orderId will be manually constructed)
       if (creditRecord.creditPersonId) {
-        await creditRecord.populate("creditPersonId", "name phone");
+        await creditRecord.populate("creditPersonId", "name phone address township");
       }
 
       // 9. Construct clean creditRecord object for response
@@ -318,7 +318,7 @@ export const getAllCreditRecords = asyncErrorHandler(async (req, res, next) => {
   // Execute query with optional pagination
   let creditRecordsQuery = CreditRecord.find(query)
     .populate("orderId", "orderNumber finalAmount paymentType")
-    .populate("creditPersonId", "name phone")
+    .populate("creditPersonId", "name phone address township")
     .populate("addedBy", "name email")
     .sort({ paymentDate: -1 });
 
@@ -666,7 +666,7 @@ export const hardDeleteCreditRecord = asyncErrorHandler(
 
         // 4. Populate references for response (before deletion)
         if (creditRecord.creditPersonId) {
-          await creditRecord.populate("creditPersonId", "name phone");
+          await creditRecord.populate("creditPersonId", "name phone address township");
         }
 
         // 5. Store credit record amount and previous order paid amount for response

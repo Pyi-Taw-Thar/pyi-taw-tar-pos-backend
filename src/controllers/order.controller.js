@@ -89,19 +89,10 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
     );
   }
 
-  // Validate creditPersonId - only allowed when paymentType is "credit"
+  // Credit person can be assigned to any order type (paid or credit)
   if (creditPersonId) {
     if (!mongoose.Types.ObjectId.isValid(creditPersonId)) {
       return next(new CustomError(400, "Invalid credit person ID format"));
-    }
-
-    if (paymentType !== "credit") {
-      return next(
-        new CustomError(
-          400,
-          "Credit person ID can only be provided when payment type is 'credit'",
-        ),
-      );
     }
   }
 
@@ -431,10 +422,30 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
             "ordersProducts.inventoryId",
             "productName productCode SKU",
           );
+          await newOrder.populate(
+            "creditPersonId",
+            "name phone address township"
+          );
 
           // Mark as created successfully
           orderCreated = true;
         });
+
+        // Calculate total outstanding for this credit person (all orders)
+        let totalOutstanding = 0;
+        if (newOrder && newOrder.creditPersonId) {
+          try {
+            const allOrders = await Order.find({
+              creditPersonId: newOrder.creditPersonId,
+              isDeleted: false,
+            }).select("finalAmount paidAmount");
+            totalOutstanding = allOrders.reduce((sum, o) => {
+              return sum + Math.max(0, (o.finalAmount || 0) - (o.paidAmount || 0));
+            }, 0);
+          } catch (e) {
+            console.error("Error calculating outstanding:", e);
+          }
+        }
 
         // If we reach here, order was created successfully
         // Send response outside the transaction
@@ -450,10 +461,13 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
           ip: req.ip,
         });
 
+        const orderData = newOrder.toObject();
+        orderData.creditPersonTotalOutstanding = totalOutstanding;
+
         res.status(201).json({
           success: true,
           message: "Order created successfully",
-          data: newOrder,
+          data: orderData,
         });
         return; // Exit the retry loop
       } catch (error) {
@@ -634,7 +648,7 @@ export const getAllOrders = asyncErrorHandler(async (req, res, next) => {
       .limit(limitNum)
       .populate("storefrontId", "locationName locationCode")
       .populate("ordersProducts.inventoryId", "productName productCode SKU")
-      .populate("creditPersonId", "name phone")
+      .populate("creditPersonId", "name phone address township")
       .populate("soldBy", "name role"),
     Order.countDocuments(filter),
   ]);
@@ -660,17 +674,36 @@ export const getOrders = asyncErrorHandler(async (req, res, next) => {
   const order = await Order.findOne({ _id: orderId, isDeleted: false })
     .populate("storefrontId", "locationName locationCode")
     .populate("ordersProducts.inventoryId", "productName productCode SKU")
-    .populate("creditPersonId", "name phone")
+    .populate("creditPersonId", "name phone address township")
     .populate("soldBy", "name role");
 
   if (!order) {
     return next(new CustomError(404, "Order not found"));
   }
 
+  // Calculate total outstanding for this credit person (all orders)
+  let creditPersonTotalOutstanding;
+  if (order.creditPersonId) {
+    try {
+      const allOrders = await Order.find({
+        creditPersonId: order.creditPersonId,
+        isDeleted: false,
+      }).select("finalAmount paidAmount");
+      creditPersonTotalOutstanding = allOrders.reduce((sum, o) => {
+        return sum + Math.max(0, (o.finalAmount || 0) - (o.paidAmount || 0));
+      }, 0);
+    } catch (e) {
+      console.error("Error calculating outstanding:", e);
+    }
+  }
+
+  const orderObj = order.toObject();
+  orderObj.creditPersonTotalOutstanding = creditPersonTotalOutstanding;
+
   res.status(200).json({
     success: true,
     message: "Order fetched successfully",
-    data: order,
+    data: orderObj,
   });
 });
 
@@ -711,13 +744,7 @@ export const updateOrderCreditPersonId = asyncErrorHandler(
           throw new CustomError(400, "Cannot update deleted order");
         }
 
-        // 2. Validate order is a credit order
-        if (order.paymentType !== "credit") {
-          throw new CustomError(
-            400,
-            "Can only add credit person to credit orders. This order is not a credit order.",
-          );
-        }
+
 
         // 3. Validate credit person exists
         const creditPerson =
@@ -743,7 +770,7 @@ export const updateOrderCreditPersonId = asyncErrorHandler(
 
         // 6. Populate references for response
         await order.populate("storefrontId", "storefrontName storefrontCode");
-        await order.populate("creditPersonId", "name phone");
+        await order.populate("creditPersonId", "name phone address township");
         await order.populate(
           "ordersProducts.inventoryId",
           "productName productCode SKU",
@@ -840,7 +867,7 @@ export const updateOrderPaidAmount = asyncErrorHandler(
           "ordersProducts.inventoryId",
           "productName productCode SKU",
         );
-        await order.populate("creditPersonId", "name phone");
+        await order.populate("creditPersonId", "name phone address township");
         await order.populate("soldBy", "name role");
 
         // 4. Send response
@@ -897,7 +924,7 @@ export const getOrdersByStorefrontId = asyncErrorHandler(
       .sort({ createdAt: -1 }) // Sort by newest first
       .populate("storefrontId", "locationName locationCode")
       .populate("ordersProducts.inventoryId", "productName productCode SKU")
-      .populate("creditPersonId", "name phone")
+      .populate("creditPersonId", "name phone address township")
       .populate("soldBy", "name role");
 
     res.status(200).json({
@@ -1201,7 +1228,7 @@ export const addOrderItems = asyncErrorHandler(async (req, res, next) => {
         "ordersProducts.inventoryId",
         "productName productCode SKU",
       );
-      await order.populate("creditPersonId", "name phone");
+      await order.populate("creditPersonId", "name phone address township");
       await order.populate("soldBy", "name role");
 
       logActivity({
@@ -1476,7 +1503,7 @@ export const removeOrderItems = asyncErrorHandler(async (req, res, next) => {
         "ordersProducts.inventoryId",
         "productName productCode SKU",
       );
-      await order.populate("creditPersonId", "name phone");
+      await order.populate("creditPersonId", "name phone address township");
       await order.populate("soldBy", "name role");
 
       logActivity({

@@ -7,7 +7,7 @@ import mongoose from "mongoose";
 import XLSX from "xlsx";
 
 export const register = asyncErrorHandler(async (req, res, next) => {
-  const { name, phone, password } = req.body;
+  const { name, phone, password, address, township } = req.body;
 
   if (!name || !phone || !password) {
     return next(new CustomError(400, "Name, phone and password are required."));
@@ -22,7 +22,13 @@ export const register = asyncErrorHandler(async (req, res, next) => {
     return next(new CustomError(400, "Phone number already registered."));
   }
 
-  const customer = await Customer.create({ name, phone, password });
+  const customer = await Customer.create({
+    name,
+    phone,
+    password,
+    address: address || "",
+    township: township || "",
+  });
 
   res.status(201).json({
     success: true,
@@ -32,6 +38,8 @@ export const register = asyncErrorHandler(async (req, res, next) => {
         _id: customer._id,
         name: customer.name,
         phone: customer.phone,
+        address: customer.address,
+        township: customer.township,
       },
       token: signToken(customer._id, "customer"),
     },
@@ -97,6 +105,7 @@ export const getAllCustomers = asyncErrorHandler(async (req, res, next) => {
     ];
   }
 
+  console.log("getAllCustomers filter applied:", filter);
   const [customers, total] = await Promise.all([
     Customer.find(filter)
       .sort({ createdAt: -1 })
@@ -118,7 +127,7 @@ export const getAllCustomers = asyncErrorHandler(async (req, res, next) => {
 });
 
 export const updateMe = asyncErrorHandler(async (req, res, next) => {
-  const { name, phone, password, addresses } = req.body;
+  const { name, phone, password, address, township } = req.body;
   const customer = req.customer;
 
   if (name) customer.name = name;
@@ -138,7 +147,8 @@ export const updateMe = asyncErrorHandler(async (req, res, next) => {
     customer.password = password;
   }
 
-  if (addresses) customer.addresses = addresses;
+  if (address !== undefined) customer.address = address;
+  if (township !== undefined) customer.township = township;
 
   await customer.save();
 
@@ -151,7 +161,7 @@ export const updateMe = asyncErrorHandler(async (req, res, next) => {
 
 export const updateCustomerByAdmin = asyncErrorHandler(async (req, res, next) => {
   const { id } = req.params;
-  const { name, phone, password, isActive, addresses, tier } = req.body;
+  const { name, phone, password, isActive, address, township, tier } = req.body;
 
   const customer = await Customer.findById(id);
   if (!customer) {
@@ -185,7 +195,8 @@ export const updateCustomerByAdmin = asyncErrorHandler(async (req, res, next) =>
   }
 
   if (isActive !== undefined) customer.isActive = isActive;
-  if (addresses !== undefined) customer.addresses = addresses;
+  if (address !== undefined) customer.address = address;
+  if (township !== undefined) customer.township = township;
 
   await customer.save();
 
@@ -292,12 +303,31 @@ export const importCustomersFromExcel = asyncErrorHandler(async (req, res, next)
   let skipped = 0;
   const errors = [];
 
+  // Helper to extract values case-insensitively
+  const getRowValue = (row, keyName) => {
+    const key = Object.keys(row).find(k => k.trim().toLowerCase() === keyName.toLowerCase());
+    return key ? row[key] : undefined;
+  };
+
   for (const row of rows) {
     try {
-      const name = (row.Name || "").toString().trim();
+      const nameVal = getRowValue(row, "Name");
+      const name = nameVal ? nameVal.toString().trim().replace(/[\u200B-\u200D\uFEFF]/g, '') : '';
       if (!name) {
         skipped++;
         continue;
+      }
+
+      const addressLineVal = getRowValue(row, "Address");
+      const addressLine = addressLineVal ? String(addressLineVal).trim() : "";
+      
+      const townshipVal = getRowValue(row, "Township");
+      const township = townshipVal ? String(townshipVal).trim() : "";
+
+      const phoneVal = getRowValue(row, "Phone");
+      let phone = undefined;
+      if (phoneVal) {
+        phone = phoneVal.toString().trim().replace(/[^0-9]/g, "");
       }
 
       // Check for duplicate by name (case-insensitive)
@@ -306,7 +336,35 @@ export const importCustomersFromExcel = asyncErrorHandler(async (req, res, next)
       });
 
       if (existing) {
-        skipped++;
+        // Update existing customer details instead of skipping
+        let modified = false;
+
+        if (phone && !existing.phone) {
+          existing.phone = phone;
+          modified = true;
+        }
+
+        if (addressLine && existing.address !== addressLine) {
+          existing.address = addressLine;
+          modified = true;
+        }
+
+        if (township && existing.township !== township) {
+          existing.township = township;
+          modified = true;
+        }
+
+        if (!existing.isCreditPerson) {
+          existing.isCreditPerson = true;
+          modified = true;
+        }
+
+        if (modified) {
+          await existing.save();
+          created++;
+        } else {
+          skipped++;
+        }
         continue;
       }
 
@@ -314,19 +372,15 @@ export const importCustomersFromExcel = asyncErrorHandler(async (req, res, next)
         name,
         password: Math.random().toString(36).slice(2, 10),
         isCreditPerson: true,
+        address: addressLine,
+        township,
       };
 
-      // Only include phone if present in Excel
-      if (row.Phone) {
-        let phone = row.Phone.toString().trim();
-        phone = phone.replace(/[^0-9]/g, "");
-        if (phone) {
-          customerData.phone = phone;
-        }
+      if (phone) {
+        customerData.phone = phone;
       }
 
       await Customer.create(customerData);
-
       created++;
     } catch (err) {
       errors.push({ name: row.Name || "unknown", error: err.message });

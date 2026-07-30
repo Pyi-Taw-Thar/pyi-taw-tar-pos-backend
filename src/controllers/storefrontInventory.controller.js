@@ -202,6 +202,7 @@ export const getAllStorefrontInventory = asyncErrorHandler(
       isLowStock,
       search,
       category,
+      brand,
       limitedOnly,
       sortBy = "createdAt",
       sortOrder = "desc",
@@ -253,6 +254,15 @@ export const getAllStorefrontInventory = asyncErrorHandler(
 
     if (category) {
       pipeline.push({ $match: { "inventoryId.category": category } });
+    }
+
+    if (brand) {
+      const escaped = brand.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      pipeline.push({
+        $match: {
+          "inventoryId.brand": { $regex: `^${escaped}$`, $options: "i" },
+        },
+      });
     }
 
     if (limitedOnly === "true") {
@@ -815,3 +825,50 @@ export const importStorefrontInventoryFromExcel = asyncErrorHandler(
     });
   },
 );
+
+// Get all unique brands for a specific storefront
+export const getStorefrontBrands = asyncErrorHandler(
+  async (req, res, next) => {
+    const { storefrontId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(storefrontId)) {
+      return next(new CustomError(400, "Invalid storefront ID format"));
+    }
+
+    const storefrontObjId = new mongoose.Types.ObjectId(storefrontId);
+
+    const brands = await StorefrontInventory.aggregate([
+      { $match: { storefrontId: storefrontObjId } },
+      {
+        $lookup: {
+          from: "inventories",
+          localField: "inventoryId",
+          foreignField: "_id",
+          as: "inventory",
+        },
+      },
+      { $unwind: "$inventory" },
+      { $match: { "inventory.status": "active" } },
+      {
+        $group: {
+          _id: "$inventory.brand",
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          brand: "$_id",
+        },
+      },
+      { $sort: { brand: 1 } },
+    ]);
+
+    const brandList = brands.map((b) => b.brand).filter(Boolean);
+
+    res.status(200).json({
+      success: true,
+      data: brandList,
+    });
+  },
+);
+

@@ -252,14 +252,11 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
   } = req.body;
   const customerId = req.customer._id;
 
-  let shippingAddress = {};
-  if (shippingAddressId !== undefined && shippingAddressId !== null) {
-    const addr = req.customer.addresses[shippingAddressId];
-    if (!addr) {
-      return next(new CustomError(400, "Invalid shippingAddressId"));
-    }
-    shippingAddress = addr;
-  }
+  let shippingAddress = {
+    label: "Main",
+    addressLine: req.customer.address || "",
+    city: req.customer.township || "",
+  };
 
   if (!products || !Array.isArray(products) || products.length === 0) {
     return next(new CustomError(400, "Order must have at least one product"));
@@ -584,7 +581,7 @@ export const getEcommerceOrderById = asyncErrorHandler(async (req, res, next) =>
   }
 
   const order = await EcommerceOrder.findById(id)
-    .populate("customerId", "name phone addresses")
+    .populate("customerId", "name phone address township")
     .populate("products.inventoryId", "productName productCode SKU images");
 
   if (!order || order.isDeleted) {

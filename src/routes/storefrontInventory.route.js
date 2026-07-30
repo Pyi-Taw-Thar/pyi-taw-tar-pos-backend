@@ -6,6 +6,7 @@ import {
   getStorefrontInventoryById,
   updateStorefrontInventoryQuantity,
   importStorefrontInventoryFromExcel,
+  getStorefrontBrands,
 } from "../controllers/storefrontInventory.controller.js";
 import { protect } from "../controllers/administrationPolicy.controller.js";
 import { permissionGranted } from "../controllers/administrationPolicy.controller.js";
@@ -57,6 +58,14 @@ router.get(
   protect,
   permissionGranted("owner", "admin", "cashier"),
   getAllStorefrontInventory
+);
+
+// Get all unique brands for a specific storefront
+router.get(
+  "/storefront-inventory/storefront/:storefrontId/brands",
+  protect,
+  permissionGranted("owner", "admin", "cashier"),
+  getStorefrontBrands
 );
 
 // Get storefront inventory by ID

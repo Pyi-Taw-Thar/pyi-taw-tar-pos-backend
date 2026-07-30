@@ -2,13 +2,6 @@ import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 import { TIER_KEYS } from "../constants/customerTiers.js";
 
-const addressSchema = new mongoose.Schema({
-  label: { type: String, trim: true },
-  addressLine: { type: String, trim: true },
-  city: { type: String, trim: true },
-  isDefault: { type: Boolean, default: false },
-}, { _id: false });
-
 const customerSchema = new mongoose.Schema({
   name: {
     type: String,
@@ -27,7 +20,16 @@ const customerSchema = new mongoose.Schema({
     minlength: [6, "Password must be at least 6 characters"],
     select: false,
   },
-  addresses: [addressSchema],
+  address: {
+    type: String,
+    trim: true,
+    default: "",
+  },
+  township: {
+    type: String,
+    trim: true,
+    default: "",
+  },
   isActive: {
     type: Boolean,
     default: true,
