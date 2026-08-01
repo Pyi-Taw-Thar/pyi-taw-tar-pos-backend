@@ -139,6 +139,11 @@ const orderSchema = new mongoose.Schema(
       trim: true,
       default: null,
     },
+    // Snapshot of the credit person's total outstanding at order creation time
+    creditPersonTotalOutstanding: {
+      type: Number,
+      default: null,
+    },
   },
   {
     timestamps: true,

@@ -432,6 +432,7 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
         });
 
         // Calculate total outstanding for this credit person (all orders)
+        // Snapshot — stored on the order document so it doesn't change later
         let totalOutstanding = 0;
         if (newOrder && newOrder.creditPersonId) {
           try {
@@ -445,6 +446,12 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
           } catch (e) {
             console.error("Error calculating outstanding:", e);
           }
+          // Save snapshot to the order document
+          await Order.findByIdAndUpdate(
+            newOrder._id,
+            { $set: { creditPersonTotalOutstanding: totalOutstanding } }
+          );
+          newOrder.creditPersonTotalOutstanding = totalOutstanding;
         }
 
         // If we reach here, order was created successfully
@@ -681,21 +688,10 @@ export const getOrders = asyncErrorHandler(async (req, res, next) => {
     return next(new CustomError(404, "Order not found"));
   }
 
-  // Calculate total outstanding for this credit person (all orders)
-  let creditPersonTotalOutstanding;
-  if (order.creditPersonId) {
-    try {
-      const allOrders = await Order.find({
-        creditPersonId: order.creditPersonId,
-        isDeleted: false,
-      }).select("finalAmount paidAmount");
-      creditPersonTotalOutstanding = allOrders.reduce((sum, o) => {
-        return sum + Math.max(0, (o.finalAmount || 0) - (o.paidAmount || 0));
-      }, 0);
-    } catch (e) {
-      console.error("Error calculating outstanding:", e);
-    }
-  }
+  // Use snapshot stored at order creation time (does not change later)
+  const creditPersonTotalOutstanding = order.creditPersonTotalOutstanding != null
+    ? order.creditPersonTotalOutstanding
+    : undefined;
 
   const orderObj = order.toObject();
   orderObj.creditPersonTotalOutstanding = creditPersonTotalOutstanding;

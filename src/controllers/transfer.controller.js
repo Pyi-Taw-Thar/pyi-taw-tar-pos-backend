@@ -301,10 +301,19 @@ export const createTransfer = asyncErrorHandler(async (req, res, next) => {
       // Fetch GRN again for line item validation
       const grn = await GoodsRecievedNote.findById(sourceId).lean();
 
-      // Find corresponding GRN line item by inventoryId
-      const grnLineItem = grn.lineItems.find(
-        (item) => item.inventoryId.toString() === inventoryIdValue.toString()
-      );
+      // Find corresponding GRN line item
+      let grnLineItem;
+      if (userItem.grnLineItemId) {
+        // Option 1: use specific line item ID to disambiguate duplicate product codes
+        grnLineItem = grn.lineItems.find(
+          (item) => item._id.toString() === String(userItem.grnLineItemId)
+        );
+      } else {
+        // Backward compatible: find by inventoryId
+        grnLineItem = grn.lineItems.find(
+          (item) => item.inventoryId.toString() === inventoryIdValue.toString()
+        );
+      }
 
       if (!grnLineItem) {
         return next(
