@@ -6,6 +6,7 @@ import {
   getMe,
   updateMe,
   getAllCustomers,
+  getAllTownships,
   updateCustomerByAdmin,
   toggleCreditPersonStatus,
   updateCreditPersonBlacklist,
@@ -24,6 +25,7 @@ router.post("/customer/login", login);
 router.get("/customer/me", customerProtect, getMe);
 router.patch("/customer/me", customerProtect, updateMe);
 router.get("/customer", protect, permissionGranted("owner", "admin"), getAllCustomers);
+router.get("/customer/townships", protect, permissionGranted("owner", "admin"), getAllTownships);
 router.patch("/customer/:id", protect, permissionGranted("owner", "admin"), updateCustomerByAdmin);
 
 // Credit person management (for POS / dashboard admin)

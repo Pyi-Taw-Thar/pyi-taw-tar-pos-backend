@@ -88,7 +88,7 @@ export const getMe = asyncErrorHandler(async (req, res, next) => {
 });
 
 export const getAllCustomers = asyncErrorHandler(async (req, res, next) => {
-  const { page, limit, search, tier } = req.query;
+  const { page, limit, search, tier, township } = req.query;
   const pageNum = parseInt(page) || 1;
   const limitNum = parseInt(limit) || 20;
   const skip = (pageNum - 1) * limitNum;
@@ -96,6 +96,9 @@ export const getAllCustomers = asyncErrorHandler(async (req, res, next) => {
   const filter = {};
   if (tier && TIER_KEYS.includes(tier)) {
     filter.tier = tier;
+  }
+  if (township && township.trim()) {
+    filter.township = township.trim();
   }
   if (search && search.trim()) {
     const escaped = search.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -123,6 +126,15 @@ export const getAllCustomers = asyncErrorHandler(async (req, res, next) => {
       totalItems: total,
       itemsPerPage: limitNum,
     },
+  });
+});
+
+export const getAllTownships = asyncErrorHandler(async (req, res, next) => {
+  const townships = await Customer.distinct("township");
+  res.status(200).json({
+    success: true,
+    message: "Townships retrieved successfully",
+    data: townships.filter(Boolean),
   });
 });
 
