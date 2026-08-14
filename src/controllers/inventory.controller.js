@@ -138,6 +138,7 @@ export const getAllInventory = asyncErrorHandler(async (req, res, next) => {
     page,
     limit,
     category,
+    subCategory,
     status,
     search,
     sortBy = "createdAt",
@@ -149,6 +150,10 @@ export const getAllInventory = asyncErrorHandler(async (req, res, next) => {
 
   if (category) {
     query.category = category;
+  }
+
+  if (subCategory) {
+    query.subCategory = subCategory;
   }
 
   if (status) {
@@ -778,6 +783,16 @@ export const getAllCategories = asyncErrorHandler(async (req, res, next) => {
     success: true,
     message: "Categories retrieved successfully",
     data: categories.filter(Boolean), // Remove any null or undefined values
+  });
+});
+
+export const getAllSubCategories = asyncErrorHandler(async (req, res, next) => {
+  const subCategories = await Inventory.distinct("subCategory");
+
+  res.status(200).json({
+    success: true,
+    message: "Sub categories retrieved successfully",
+    data: subCategories.filter(Boolean), // Remove null, undefined, "Unknown"
   });
 });
 

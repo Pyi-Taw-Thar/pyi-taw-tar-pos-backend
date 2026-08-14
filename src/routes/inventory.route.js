@@ -8,6 +8,7 @@ import {
   importInventoryFromExcel,
   importUpdateInventoryFromExcel,
   getAllCategories,
+  getAllSubCategories,
   inventoryMulter,
   uploadInventoryImages,
   deleteInventoryImage,
@@ -64,6 +65,14 @@ router.get(
   protect,
   permissionGranted("owner", "admin"),
   getAllCategories,
+);
+
+// Get all unique sub categories
+router.get(
+  "/inventory/subcategories",
+  protect,
+  permissionGranted("owner", "admin"),
+  getAllSubCategories,
 );
 
 // Create new inventory item (multipart: fields + up to 5 images)

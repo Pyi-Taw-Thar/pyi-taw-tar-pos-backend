@@ -20,7 +20,13 @@ export const getBrands = asyncErrorHandler(async (req, res, next) => {
     return next(new CustomError(500, "Invalid ecommerce storefront ID"));
   }
 
+  const { subCategory } = req.query;
   const storefrontObjId = new mongoose.Types.ObjectId(ecommerceStorefrontId);
+
+  const matchStage = { "inventory.status": "active" };
+  if (subCategory) {
+    matchStage["inventory.subCategory"] = subCategory;
+  }
 
   const brands = await StorefrontInventory.aggregate([
     { $match: { storefrontId: storefrontObjId } },
@@ -33,7 +39,7 @@ export const getBrands = asyncErrorHandler(async (req, res, next) => {
       },
     },
     { $unwind: "$inventory" },
-    { $match: { "inventory.status": "active" } },
+    { $match: matchStage },
     {
       $group: {
         _id: "$inventory.brand",
@@ -53,6 +59,52 @@ export const getBrands = asyncErrorHandler(async (req, res, next) => {
   res.status(200).json({
     success: true,
     data: brandList,
+  });
+});
+
+export const getSubCategories = asyncErrorHandler(async (req, res, next) => {
+  if (!ecommerceStorefrontId) {
+    return next(new CustomError(500, "Ecommerce storefront not configured"));
+  }
+  if (!mongoose.Types.ObjectId.isValid(ecommerceStorefrontId)) {
+    return next(new CustomError(500, "Invalid ecommerce storefront ID"));
+  }
+
+  const storefrontObjId = new mongoose.Types.ObjectId(ecommerceStorefrontId);
+
+  const subCategories = await StorefrontInventory.aggregate([
+    { $match: { storefrontId: storefrontObjId } },
+    {
+      $lookup: {
+        from: "inventories",
+        localField: "inventoryId",
+        foreignField: "_id",
+        as: "inventory",
+      },
+    },
+    { $unwind: "$inventory" },
+    { $match: { "inventory.status": "active" } },
+    {
+      $group: {
+        _id: "$inventory.subCategory",
+      },
+    },
+    {
+      $project: {
+        _id: 0,
+        subCategory: "$_id",
+      },
+    },
+    { $sort: { subCategory: 1 } },
+  ]);
+
+  const subCategoryList = subCategories
+    .map((s) => s.subCategory)
+    .filter(Boolean); // only remove null/undefined/empty
+
+  res.status(200).json({
+    success: true,
+    data: subCategoryList,
   });
 });
 
