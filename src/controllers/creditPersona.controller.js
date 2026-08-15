@@ -8,6 +8,7 @@ const toCreditPersonResponse = (customer) => ({
   _id: customer._id,
   name: customer.name,
   phone: customer.phone,
+  township: customer.township,
   blacklist: customer.blacklist,
   blacklistReason: customer.blacklistReason,
   blacklistDate: customer.blacklistDate,
