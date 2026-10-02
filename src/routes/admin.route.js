@@ -13,15 +13,23 @@ import {
 } from "../controllers/admin.controller.js";
 import { protect } from "../controllers/administrationPolicy.controller.js";
 import { permissionGranted } from "../controllers/administrationPolicy.controller.js";
+import validate from "../middlewares/validate.middleware.js";
+import {
+  adminSignupSchema,
+  adminLoginSchema,
+  updatePasswordSchema,
+} from "../validations/admin.validation.js";
+
 const router = express.Router();
 
 router.post(
   "/admin/signup",
   protect,
   permissionGranted("owner", "admin"),
+  validate(adminSignupSchema),
   signup
 );
-router.post("/admin/login", login);
+router.post("/admin/login", validate(adminLoginSchema), login);
 router.post("/admin/logout", protect, logout);
 router.get(
   "/admin",
@@ -45,6 +53,7 @@ router.patch(
   "/admin/update-password/:accountId",
   protect,
   permissionGranted("owner"),
+  validate(updatePasswordSchema),
   updatePassword
 );
 router.patch(

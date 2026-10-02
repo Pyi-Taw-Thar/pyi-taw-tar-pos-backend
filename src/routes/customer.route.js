@@ -15,15 +15,21 @@ import {
 } from "../controllers/customer.controller.js";
 import { customerProtect } from "../middlewares/customerAuth.js";
 import { protect, permissionGranted } from "../controllers/administrationPolicy.controller.js";
+import validate from "../middlewares/validate.middleware.js";
+import {
+  customerRegisterSchema,
+  customerLoginSchema,
+  updateMeSchema,
+} from "../validations/customer.validation.js";
 
 const upload = multer({ storage: multer.memoryStorage() });
 const router = express.Router();
 
 // Customer auth & profile
-router.post("/customer/register", register);
-router.post("/customer/login", login);
+router.post("/customer/register", validate(customerRegisterSchema), register);
+router.post("/customer/login", validate(customerLoginSchema), login);
 router.get("/customer/me", customerProtect, getMe);
-router.patch("/customer/me", customerProtect, updateMe);
+router.patch("/customer/me", customerProtect, validate(updateMeSchema), updateMe);
 router.get("/customer", protect, permissionGranted("owner", "admin"), getAllCustomers);
 router.get("/customer/townships", protect, permissionGranted("owner", "admin"), getAllTownships);
 router.patch("/customer/:id", protect, permissionGranted("owner", "admin"), updateCustomerByAdmin);

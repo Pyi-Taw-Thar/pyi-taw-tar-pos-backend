@@ -2,8 +2,9 @@ import jwt from "jsonwebtoken";
 import util from "util";
 import Customer from "../models/customer.model.js";
 import CustomError from "../utils/customError.js";
+import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 
-export const customerProtect = async (req, res, next) => {
+export const customerProtect = asyncErrorHandler(async (req, res, next) => {
   const testToken = req.headers.authorization;
   let token;
   if (testToken && testToken.startsWith("Bearer")) {
@@ -26,4 +27,6 @@ export const customerProtect = async (req, res, next) => {
 
   req.customer = customer;
   next();
-};
+});
+
+export default customerProtect;

@@ -463,9 +463,7 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
     }
 
     let unitPrice = inventory.sellingPrice * factor;
-    if (item.unitPrice) {
-      unitPrice = item.unitPrice;
-    } else if (inventory.wholesalePrices?.length > 0) {
+    if (inventory.wholesalePrices?.length > 0) {
       const matchingWholesale = inventory.wholesalePrices.filter(
         (wp) => wp.unit === itemUnit || (!wp.unit && !itemUnit),
       );
@@ -491,27 +489,64 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
     });
 
     stockUpdates.push({
-      stockRecord,
+      stockRecordId: stockRecord._id,
       deductQty: baseQty,
     });
   }
 
-  // Deduct stock
-  for (const update of stockUpdates) {
-    update.stockRecord.quantity -= update.deductQty;
-    update.stockRecord.lastUpdated = new Date();
-    await update.stockRecord.save();
-  }
+  // Execute stock deduction and order creation inside an ACID transaction session
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
-  // Create order
-  const order = await EcommerceOrder.create({
-    customerId,
-    products: validatedProducts,
-    shippingAddress: shippingAddress || {},
-    totalAmount,
-    paymentMethod: paymentMethod || "cash_on_delivery",
-    note: note || null,
-  });
+  let order;
+  try {
+    // 1. Atomically verify and deduct stock with concurrency check
+    for (const update of stockUpdates) {
+      const updatedStock = await StorefrontInventory.findOneAndUpdate(
+        {
+          _id: update.stockRecordId,
+          quantity: { $gte: update.deductQty },
+        },
+        {
+          $inc: { quantity: -update.deductQty },
+          $set: { lastUpdated: new Date() },
+        },
+        { session, new: true }
+      );
+
+      if (!updatedStock) {
+        throw new CustomError(
+          400,
+          "Failed to deduct stock due to concurrent checkout or insufficient balance. Please try again."
+        );
+      }
+    }
+
+    // 2. Create ecommerce order inside session
+    const [newOrder] = await EcommerceOrder.create(
+      [
+        {
+          customerId,
+          products: validatedProducts,
+          shippingAddress: shippingAddress || {},
+          totalAmount,
+          paymentMethod: paymentMethod || "cash_on_delivery",
+          note: note || null,
+        },
+      ],
+      { session }
+    );
+
+    order = newOrder;
+
+    // 3. Commit transaction
+    await session.commitTransaction();
+  } catch (err) {
+    await session.abortTransaction();
+    throw err;
+  } finally {
+    session.endSession();
+  }
 
   await order.populate("products.inventoryId", "productName productCode SKU images");
 

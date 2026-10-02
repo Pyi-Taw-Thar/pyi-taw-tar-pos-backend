@@ -17,6 +17,8 @@ import {
 } from "../controllers/ecommerce.controller.js";
 import { customerProtect } from "../middlewares/customerAuth.js";
 import { protect, permissionGranted } from "../controllers/administrationPolicy.controller.js";
+import validate from "../middlewares/validate.middleware.js";
+import { ecommerceOrderCreateSchema } from "../validations/ecommerce.validation.js";
 
 const router = express.Router();
 
@@ -24,7 +26,12 @@ router.get("/ecommerce/products/brands", getBrands);
 router.get("/ecommerce/products/subcategories", getSubCategories);
 router.get("/ecommerce/products/categories", getCategories);
 router.get("/ecommerce/products", getProducts);
-router.post("/ecommerce/order", customerProtect, createOrder);
+router.post(
+  "/ecommerce/order",
+  customerProtect,
+  validate(ecommerceOrderCreateSchema),
+  createOrder
+);
 router.get("/ecommerce/orders", customerProtect, getMyOrders);
 router.get("/ecommerce/orders/:id", customerProtect, getMyOrderById);
 
