@@ -380,87 +380,90 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
 
               // === Exact Scanned Batch Deduction & Multi-Batch Splitting ===
               const finalAllocatedBatches = [];
+              const isPendingOrder = req.body.orderStatus === "pending";
 
-              if (product.batches && Array.isArray(product.batches) && product.batches.length > 0) {
-                // Verify that total scanned quantity equals requestedBase
-                const totalScannedQty = product.batches.reduce((sum, b) => sum + (Number(b.quantity) || 0), 0);
-                if (totalScannedQty !== requestedBase) {
-                  const inventoryItem = inventoryMap.get(product.inventoryId.toString());
-                  throw new CustomError(
-                    400,
-                    `Scanned batches quantity (${totalScannedQty}) does not match order quantity (${requestedBase}) for product '${inventoryItem?.productName || product.inventoryId}'`
-                  );
-                }
-
-                for (const b of product.batches) {
-                  let query = { locationId: storefrontId };
-                  if (b.batchStockId && mongoose.Types.ObjectId.isValid(b.batchStockId)) {
-                    query._id = b.batchStockId;
-                  } else if (b.batchBarcode) {
-                    query.batchBarcode = b.batchBarcode;
-                  } else if (b.batchNumber) {
-                    query.inventoryId = product.inventoryId;
-                    query.batchNumber = b.batchNumber;
-                  }
-
-                  const batchStock = await BatchStock.findOne(query).session(session);
-                  if (!batchStock) {
-                    throw new CustomError(
-                      404,
-                      `Batch stock not found for batch '${b.batchNumber || b.batchBarcode}' at this storefront`
-                    );
-                  }
-
-                  if (batchStock.quantity < b.quantity) {
+              if (!isPendingOrder) {
+                if (product.batches && Array.isArray(product.batches) && product.batches.length > 0) {
+                  // Verify that total scanned quantity equals requestedBase
+                  const totalScannedQty = product.batches.reduce((sum, b) => sum + (Number(b.quantity) || 0), 0);
+                  if (totalScannedQty !== requestedBase) {
+                    const inventoryItem = inventoryMap.get(product.inventoryId.toString());
                     throw new CustomError(
                       400,
-                      `Insufficient stock for batch '${batchStock.batchNumber}'. Available: ${batchStock.quantity}, Requested: ${b.quantity}`
+                      `Scanned batches quantity (${totalScannedQty}) does not match order quantity (${requestedBase}) for product '${inventoryItem?.productName || product.inventoryId}'`
                     );
                   }
 
-                  batchStock.quantity -= b.quantity;
-                  if (batchStock.quantity === 0) {
-                    batchStock.status = "depleted";
+                  for (const b of product.batches) {
+                    let query = { locationId: storefrontId };
+                    if (b.batchStockId && mongoose.Types.ObjectId.isValid(b.batchStockId)) {
+                      query._id = b.batchStockId;
+                    } else if (b.batchBarcode) {
+                      query.batchBarcode = b.batchBarcode;
+                    } else if (b.batchNumber) {
+                      query.inventoryId = product.inventoryId;
+                      query.batchNumber = b.batchNumber;
+                    }
+
+                    const batchStock = await BatchStock.findOne(query).session(session);
+                    if (!batchStock) {
+                      throw new CustomError(
+                        404,
+                        `Batch stock not found for batch '${b.batchNumber || b.batchBarcode}' at this storefront`
+                      );
+                    }
+
+                    if (batchStock.quantity < b.quantity) {
+                      throw new CustomError(
+                        400,
+                        `Insufficient stock for batch '${batchStock.batchNumber}'. Available: ${batchStock.quantity}, Requested: ${b.quantity}`
+                      );
+                    }
+
+                    batchStock.quantity -= b.quantity;
+                    if (batchStock.quantity === 0) {
+                      batchStock.status = "depleted";
+                    }
+                    await batchStock.save({ session });
+
+                    finalAllocatedBatches.push({
+                      batchStockId: batchStock._id,
+                      batchNumber: batchStock.batchNumber,
+                      batchBarcode: batchStock.batchBarcode,
+                      expiryDate: batchStock.expiryDate,
+                      quantity: b.quantity,
+                    });
                   }
-                  await batchStock.save({ session });
+                } else {
+                  // Fallback: If no scanned batches provided (e.g. manual entry without scanner),
+                  // auto-allocate from active batches using FEFO (earliest expiry first)
+                  const activeBatches = await BatchStock.find({
+                    inventoryId: product.inventoryId,
+                    locationId: storefrontId,
+                    quantity: { $gt: 0 },
+                  })
+                    .sort({ expiryDate: 1 })
+                    .session(session);
 
-                  finalAllocatedBatches.push({
-                    batchStockId: batchStock._id,
-                    batchNumber: batchStock.batchNumber,
-                    batchBarcode: batchStock.batchBarcode,
-                    expiryDate: batchStock.expiryDate,
-                    quantity: b.quantity,
-                  });
-                }
-              } else {
-                // Fallback: If no scanned batches provided (e.g. manual entry without scanner),
-                // auto-allocate from active batches using FEFO (earliest expiry first)
-                const activeBatches = await BatchStock.find({
-                  inventoryId: product.inventoryId,
-                  locationId: storefrontId,
-                  quantity: { $gt: 0 },
-                })
-                  .sort({ expiryDate: 1 })
-                  .session(session);
+                  let remainingNeeded = requestedBase;
+                  for (const batch of activeBatches) {
+                    if (remainingNeeded <= 0) break;
+                    const deductQty = Math.min(batch.quantity, remainingNeeded);
+                    batch.quantity -= deductQty;
+                    if (batch.quantity === 0) {
+                      batch.status = "depleted";
+                    }
+                    await batch.save({ session });
 
-                let remainingNeeded = requestedBase;
-                for (const batch of activeBatches) {
-                  if (remainingNeeded <= 0) break;
-                  const deductQty = Math.min(batch.quantity, remainingNeeded);
-                  batch.quantity -= deductQty;
-                  if (batch.quantity === 0) {
-                    batch.status = "depleted";
+                    finalAllocatedBatches.push({
+                      batchStockId: batch._id,
+                      batchNumber: batch.batchNumber,
+                      batchBarcode: batch.batchBarcode,
+                      expiryDate: batch.expiryDate,
+                      quantity: deductQty,
+                    });
+                    remainingNeeded -= deductQty;
                   }
-                  await batch.save({ session });
-
-                  finalAllocatedBatches.push({
-                    batchStockId: batch._id,
-                    batchNumber: batch.batchNumber,
-                    batchBarcode: batch.batchBarcode,
-                    expiryDate: batch.expiryDate,
-                    quantity: deductQty,
-                  });
-                  remainingNeeded -= deductQty;
                 }
               }
 
@@ -486,7 +489,7 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
             paidAmount,
             paymentType: paymentType || "paid",
             paymentMethod: paymentMethod || "cash",
-            orderStatus: "completed",
+            orderStatus: req.body.orderStatus === "pending" ? "pending" : "completed",
             customerName: customerName || null,
             customerPhone: customerPhone || null,
             note: note || null,
@@ -663,7 +666,12 @@ export const getAllOrders = asyncErrorHandler(async (req, res, next) => {
   };
 
   // Extract query parameters
-  const { saleType, paymentType, paymentMethod, page, limit, search } = req.query;
+  const { saleType, paymentType, paymentMethod, page, limit, search, orderStatus } = req.query;
+
+  // Add orderStatus filter if provided
+  if (orderStatus !== undefined && orderStatus !== "") {
+    filter.orderStatus = orderStatus;
+  }
 
   // Add saleType filter if provided
   if (saleType !== undefined && saleType !== "") {

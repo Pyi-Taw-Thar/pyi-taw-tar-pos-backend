@@ -40,6 +40,7 @@ import chatbotRouter from "./routes/chatbot.route.js";
 import customerRouter from "./routes/customer.route.js";
 import ecommerceRouter from "./routes/ecommerce.route.js";
 import batchRouter from "./routes/batch.route.js";
+import fulfillmentRouter from "./routes/fulfillment.route.js";
 const app = express();
 app.use(
   helmet({
@@ -84,6 +85,7 @@ app.use("/api/v1", chatbotRouter);
 app.use("/api/v1", customerRouter);
 app.use("/api/v1", ecommerceRouter);
 app.use("/api/v1", batchRouter);
+app.use("/api/v1", fulfillmentRouter);
 //404-Error Handler
 app.all("/*any", (req, res, next) => {
   const err = new CustomError(
