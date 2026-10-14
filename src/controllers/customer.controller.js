@@ -47,7 +47,7 @@ export const register = asyncErrorHandler(async (req, res, next) => {
 });
 
 export const login = asyncErrorHandler(async (req, res, next) => {
-  const { phone, password } = req.body;
+  const { phone, password, name } = req.body;
 
   if (!phone || !password) {
     return next(new CustomError(400, "Phone and password are required."));
@@ -55,7 +55,12 @@ export const login = asyncErrorHandler(async (req, res, next) => {
 
   const customer = await Customer.findOne({ phone }).select("+password");
   if (!customer) {
-    return next(new CustomError(401, "Invalid phone or password."));
+    return next(
+      new CustomError(
+        401,
+        "ဖုန်းနံပါတ် မှားယွင်းနေပါသည် သို့မဟုတ် အကောင့်မရှိပါ။"
+      )
+    );
   }
   if (!customer.isActive) {
     return next(new CustomError(401, "Your account has been deactivated."));
@@ -66,6 +71,29 @@ export const login = asyncErrorHandler(async (req, res, next) => {
     return next(new CustomError(401, "Invalid phone or password."));
   }
 
+  // If name is provided, verify matching against customer name
+  if (name && typeof name === "string" && name.trim()) {
+    const inputName = name.trim().toLowerCase().replace(/\s+/g, " ");
+    const currentName = (customer.name || "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, " ");
+
+    if (currentName && currentName !== inputName) {
+      return next(
+        new CustomError(
+          401,
+          "အမည် သို့မဟုတ် ဖုန်းနံပါတ် မှားယွင်းနေပါသည်။ (အကောင့်ဖွင့်ထားသော အမည်နှင့် မကိုက်ညီပါ)"
+        )
+      );
+    }
+
+    if (!customer.name) {
+      customer.name = name.trim();
+      await customer.save();
+    }
+  }
+
   res.status(200).json({
     success: true,
     message: "Login successful.",
@@ -74,6 +102,9 @@ export const login = asyncErrorHandler(async (req, res, next) => {
         _id: customer._id,
         name: customer.name,
         phone: customer.phone,
+        address: customer.address,
+        township: customer.township,
+        tier: customer.tier,
       },
       token: signToken(customer._id, "customer"),
     },

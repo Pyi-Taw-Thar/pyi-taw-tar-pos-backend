@@ -12,6 +12,7 @@ export const customerRegisterSchema = {
 
 export const customerLoginSchema = {
   body: z.object({
+    name: z.string().trim().optional(),
     phone: z.string().trim().min(1, "Phone is required"),
     password: z.string().min(1, "Password is required"),
   }),
