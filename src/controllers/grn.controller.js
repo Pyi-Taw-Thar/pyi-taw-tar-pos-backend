@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import GoodsRecievedNote from "../models/goodsRecievedNote.model.js";
 import Purchasing from "../models/purchasing.model.js";
 import Inventory from "../models/inventory.model.js";
+import BatchStock from "../models/batchStock.model.js";
 import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 import CustomError from "../utils/customError.js";
 import { createDateFilter } from "../utils/dateFilter.utils.js";
@@ -95,6 +96,7 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
   let calculatedTotalAmount = 0;
   // Track cumulative received quantity per inventoryId for duplicate products
   const receivedByProduct = new Map();
+  let generatedBarcodeCount = 0;
 
   // Process each line item (supports duplicate productCode, optionally by unit)
   for (const [idx, userItem] of lineItems.entries()) {
@@ -287,6 +289,36 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
     // You pay for what you receive (good + bad), not just good quantity
     const totalPrice = receivedQuantity * unitPrice;
 
+    // Check if we need to auto-generate batchBarcode
+    let itemBatchBarcode = userItem.batchBarcode ? String(userItem.batchBarcode).trim() : null;
+    const itemBatchNumber = userItem.batchNumber ? String(userItem.batchNumber).trim() : null;
+
+    if (itemBatchNumber && !itemBatchBarcode) {
+      // Check if another line item in this same GRN batch already generated a barcode for same inventoryId + batchNumber
+      const existingInCurrentGRN = grnLineItems.find(
+        (li) =>
+          li.inventoryId.toString() === inventoryIdValue.toString() &&
+          li.batchNumber === itemBatchNumber &&
+          li.batchBarcode
+      );
+      if (existingInCurrentGRN) {
+        itemBatchBarcode = existingInCurrentGRN.batchBarcode;
+      } else {
+        // Query existing BatchStock to see if this batch barcode already exists for this inventoryId + batchNumber
+        const existingBatch = await BatchStock.findOne({
+          inventoryId: inventoryIdValue,
+          batchNumber: itemBatchNumber,
+        }).select("batchBarcode");
+
+        if (existingBatch && existingBatch.batchBarcode) {
+          itemBatchBarcode = existingBatch.batchBarcode;
+        } else {
+          itemBatchBarcode = await BatchStock.generateNextBatchBarcode(null, generatedBarcodeCount);
+          generatedBarcodeCount++;
+        }
+      }
+    }
+
     // Build line item with all data auto-filled from PO
     const grnLineItem = {
       inventoryId: inventoryIdValue, // Auto-filled from PO or looked up by productCode
@@ -297,6 +329,10 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
       unitPrice: unitPrice, // Uses PO's buyingPrice if not provided
       totalPrice: totalPrice, // Auto-calculated: receivedQuantity * unitPrice (pay for all received items)
       notes: userItem.notes || null,
+      batchNumber: itemBatchNumber,
+      batchBarcode: itemBatchBarcode,
+      expiryDate: userItem.expiryDate ? new Date(userItem.expiryDate) : null,
+      manufacturingDate: userItem.manufacturingDate ? new Date(userItem.manufacturingDate) : null,
     };
 
     grnLineItems.push(grnLineItem);
@@ -679,6 +715,18 @@ export const updateGRNLineItems = asyncErrorHandler(async (req, res, next) => {
     // Update notes if provided
     if (updateItem.notes !== undefined) {
       lineItem.notes = updateItem.notes || null;
+    }
+    if (updateItem.batchNumber !== undefined) {
+      lineItem.batchNumber = updateItem.batchNumber ? String(updateItem.batchNumber).trim() : null;
+    }
+    if (updateItem.batchBarcode !== undefined) {
+      lineItem.batchBarcode = updateItem.batchBarcode ? String(updateItem.batchBarcode).trim() : null;
+    }
+    if (updateItem.expiryDate !== undefined) {
+      lineItem.expiryDate = updateItem.expiryDate ? new Date(updateItem.expiryDate) : null;
+    }
+    if (updateItem.manufacturingDate !== undefined) {
+      lineItem.manufacturingDate = updateItem.manufacturingDate ? new Date(updateItem.manufacturingDate) : null;
     }
   }
 

@@ -31,6 +31,34 @@ const orderProductsSchema = new mongoose.Schema({
     required: [true, "Unit price is required"],
     min: [0, "Unit price cannot be negative"],
   },
+  batches: [
+    {
+      batchStockId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "BatchStock",
+        required: true,
+      },
+      batchNumber: {
+        type: String,
+        required: true,
+        trim: true,
+      },
+      batchBarcode: {
+        type: String,
+        trim: true,
+        default: null,
+      },
+      expiryDate: {
+        type: Date,
+        default: null,
+      },
+      quantity: {
+        type: Number,
+        required: true,
+        min: 0,
+      },
+    },
+  ],
 });
 
 const orderSchema = new mongoose.Schema(

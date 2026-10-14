@@ -25,6 +25,34 @@ export const createInventory = asyncErrorHandler(async (req, res, next) => {
       .filter(Boolean);
   }
 
+  // Parse chemicalNames from FormData (JSON array or comma-separated string)
+  if (typeof inventoryData.chemicalNames === "string") {
+    const rawChemicalNames = inventoryData.chemicalNames.trim();
+    if (rawChemicalNames.startsWith("[")) {
+      try {
+        const parsed = JSON.parse(rawChemicalNames);
+        if (Array.isArray(parsed)) {
+          inventoryData.chemicalNames = parsed
+            .map((c) => String(c).trim())
+            .filter(Boolean);
+        } else {
+          return next(new CustomError(400, "Invalid chemicalNames format. Must be a valid array."));
+        }
+      } catch {
+        return next(new CustomError(400, "Invalid chemicalNames format. Must be a valid JSON array."));
+      }
+    } else {
+      inventoryData.chemicalNames = rawChemicalNames
+        .split(",")
+        .map((c) => c.trim())
+        .filter(Boolean);
+    }
+  } else if (Array.isArray(inventoryData.chemicalNames)) {
+    inventoryData.chemicalNames = inventoryData.chemicalNames
+      .map((c) => String(c).trim())
+      .filter(Boolean);
+  }
+
   // Parse wholesalePrices JSON string from FormData
   if (typeof inventoryData.wholesalePrices === "string") {
     try {
@@ -164,6 +192,7 @@ export const getAllInventory = asyncErrorHandler(async (req, res, next) => {
     query.$or = [
       { productName: { $regex: search, $options: "i" } },
       { productCode: { $regex: search, $options: "i" } },
+      { chemicalNames: { $regex: search, $options: "i" } },
     ];
   }
 
@@ -409,6 +438,32 @@ export const updateInventory = asyncErrorHandler(async (req, res, next) => {
     delete updateData.limitUnit;
   }
 
+  // Normalize chemicalNames if provided in updateData
+  if (updateData.chemicalNames !== undefined) {
+    if (typeof updateData.chemicalNames === "string") {
+      const raw = updateData.chemicalNames.trim();
+      if (raw.startsWith("[")) {
+        try {
+          const parsed = JSON.parse(raw);
+          updateData.chemicalNames = Array.isArray(parsed)
+            ? parsed.map((c) => String(c).trim()).filter(Boolean)
+            : [];
+        } catch {
+          return next(new CustomError(400, "Invalid chemicalNames format."));
+        }
+      } else {
+        updateData.chemicalNames = raw
+          .split(",")
+          .map((c) => c.trim())
+          .filter(Boolean);
+      }
+    } else if (Array.isArray(updateData.chemicalNames)) {
+      updateData.chemicalNames = updateData.chemicalNames
+        .map((c) => String(c).trim())
+        .filter(Boolean);
+    }
+  }
+
   // Apply updates to the existing document and save
   // This ensures validators have access to the complete merged document
   Object.keys(updateData).forEach((key) => {
@@ -565,6 +620,12 @@ export const importInventoryFromExcel = asyncErrorHandler(
           throw new Error("Tax rate must be between 0 and 100");
         }
 
+        const rawChemicalNames =
+          row.chemicalNames ||
+          row.chemical_names ||
+          row["Chemical Names"] ||
+          row["Chemical Name"];
+
         const inventoryData = {
           productName: String(productName).trim(),
           productCode: String(productCode).trim().toUpperCase(),
@@ -580,6 +641,12 @@ export const importInventoryFromExcel = asyncErrorHandler(
             row["Sub Category"] ||
             "Unknown",
           brand: row.brand || row["Brand"] || "Unknown",
+          chemicalNames: rawChemicalNames
+            ? String(rawChemicalNames)
+                .split(",")
+                .map((c) => c.trim())
+                .filter(Boolean)
+            : [],
           description:
             row.description || row["Description"] || "No description available",
           buyingPrice: numBuyingPrice,
@@ -710,6 +777,18 @@ export const importUpdateInventoryFromExcel = asyncErrorHandler(
         for (const field of simpleFields) {
           const val = row[field] || row[field.replace(/([A-Z])/g, "_$1").toLowerCase()] || row[field.replace(/([a-z])([A-Z])/g, "$1 $2")];
           if (val) existingItem[field] = String(val).trim();
+        }
+
+        const rawChemicalNames =
+          row.chemicalNames ||
+          row.chemical_names ||
+          row["Chemical Names"] ||
+          row["Chemical Name"];
+        if (rawChemicalNames !== undefined && rawChemicalNames !== null && rawChemicalNames !== "") {
+          existingItem.chemicalNames = String(rawChemicalNames)
+            .split(",")
+            .map((c) => c.trim())
+            .filter(Boolean);
         }
 
         if (row.buyingPrice !== undefined && row.buyingPrice !== null && row.buyingPrice !== "") {

@@ -52,6 +52,12 @@ const inventorySchema = new mongoose.Schema(
       trim: true,
       default: "Unknown",
     },
+    chemicalNames: [
+      {
+        type: String,
+        trim: true,
+      },
+    ],
     description: {
       type: String,
       trim: true,
@@ -214,7 +220,8 @@ const inventorySchema = new mongoose.Schema(
 inventorySchema.index({ category: 1 });
 inventorySchema.index({ category: 1, subCategory: 1 });
 inventorySchema.index({ status: 1 });
-inventorySchema.index({ productName: "text", description: "text" }); // Text search index
+inventorySchema.index({ chemicalNames: 1 });
+inventorySchema.index({ productName: "text", description: "text", chemicalNames: "text" }); // Text search index
 
 // Virtual for profit margin
 inventorySchema.virtual("profitMargin").get(function () {

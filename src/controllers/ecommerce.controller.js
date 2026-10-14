@@ -210,6 +210,7 @@ export const getProducts = asyncErrorHandler(async (req, res, next) => {
           $or: [
             { "inventory.productName": { $regex: escaped, $options: "i" } },
             { "inventory.productCode": { $regex: escaped, $options: "i" } },
+            { "inventory.chemicalNames": { $regex: escaped, $options: "i" } },
           ],
         },
       });
@@ -236,6 +237,7 @@ export const getProducts = asyncErrorHandler(async (req, res, next) => {
             category: "$inventory.category",
             subCategory: "$inventory.subCategory",
             brand: "$inventory.brand",
+            chemicalNames: "$inventory.chemicalNames",
             unitOfMeasure: "$inventory.unitOfMeasure",
             sellingPrice: "$inventory.sellingPrice",
             uomConversions: "$inventory.uomConversions",
@@ -694,19 +696,83 @@ export const updateEcommerceOrderStatus = asyncErrorHandler(async (req, res, nex
     return next(new CustomError(400, `Invalid status. Allowed: ${validStatuses.join(", ")}`));
   }
 
-  const order = await EcommerceOrder.findByIdAndUpdate(
-    id,
-    { status },
-    { new: true, runValidators: true }
-  );
+  if (!ecommerceStorefrontId || !mongoose.Types.ObjectId.isValid(ecommerceStorefrontId)) {
+    return next(new CustomError(500, "Valid ecommerce storefront is not configured"));
+  }
+  const storefrontObjId = new mongoose.Types.ObjectId(ecommerceStorefrontId);
 
-  if (!order || order.isDeleted) {
-    return next(new CustomError(404, "Order not found"));
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  let order;
+  let previousStatus;
+  try {
+    order = await EcommerceOrder.findById(id).session(session);
+
+    if (!order || order.isDeleted) {
+      throw new CustomError(404, "Order not found");
+    }
+
+    previousStatus = order.status;
+
+    if (previousStatus === "cancelled" && status !== "cancelled") {
+      throw new CustomError(
+        400,
+        "Cancelled orders cannot be reopened because stock has already been restored."
+      );
+    }
+
+    // Restore stock to StorefrontInventory when transitioning from non-cancelled to cancelled
+    if (previousStatus !== "cancelled" && status === "cancelled") {
+      for (const item of order.products) {
+        const restoreQty =
+          item.baseQuantity ?? item.quantity * (item.factor || 1);
+
+        if (restoreQty > 0) {
+          await StorefrontInventory.findOneAndUpdate(
+            {
+              inventoryId: item.inventoryId,
+              storefrontId: storefrontObjId,
+            },
+            {
+              $inc: { quantity: restoreQty },
+              $set: { lastUpdated: new Date() },
+            },
+            { session, upsert: true, new: true }
+          );
+        }
+      }
+    }
+
+    order.status = status;
+    await order.save({ session });
+
+    await session.commitTransaction();
+  } catch (err) {
+    await session.abortTransaction();
+    throw err;
+  } finally {
+    session.endSession();
+  }
+
+  if (previousStatus !== status && req.user?._id) {
+    logActivity({
+      admin: req.user._id,
+      action: status === "cancelled" ? "cancel_order" : "update_order_status",
+      feature: "ecommerce_order",
+      description: `Updated ecommerce order ${order.orderNumber} status from "${previousStatus}" to "${status}"`,
+      targetId: order._id,
+      targetModel: "EcommerceOrder",
+      ip: req.ip,
+    });
   }
 
   res.status(200).json({
     success: true,
-    message: "Order status updated successfully.",
+    message:
+      status === "cancelled" && previousStatus !== "cancelled"
+        ? "Order cancelled and stock restored successfully."
+        : "Order status updated successfully.",
     data: order,
   });
 });

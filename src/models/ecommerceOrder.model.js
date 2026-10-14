@@ -109,7 +109,7 @@ ecommerceOrderSchema.pre("save", async function () {
 });
 
 ecommerceOrderSchema.index({ customerId: 1, createdAt: -1 });
-ecommerceOrderSchema.index({ orderNumber: 1 });
+// Note: orderNumber index is automatically created by unique: true in schema
 ecommerceOrderSchema.index({ customerId: 1, "products.inventoryId": 1, createdAt: -1 });
 
 const EcommerceOrder = mongoose.model("EcommerceOrder", ecommerceOrderSchema);

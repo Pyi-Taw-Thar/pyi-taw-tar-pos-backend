@@ -345,6 +345,9 @@ export const createTransfer = asyncErrorHandler(async (req, res, next) => {
         quantity: userItem.quantity,
         grnLineItemId: grnLineItem._id, // Link to GRN line item for tracking
         notes: userItem.notes || null,
+        batchNumber: grnLineItem.batchNumber || userItem.batchNumber || null,
+        batchBarcode: grnLineItem.batchBarcode || userItem.batchBarcode || null,
+        expiryDate: grnLineItem.expiryDate || userItem.expiryDate || null,
       });
     } else if (transferSourceType === "Warehouse") {
       // Validate warehouse has sufficient stock
@@ -377,7 +380,10 @@ export const createTransfer = asyncErrorHandler(async (req, res, next) => {
         inventoryId: inventoryIdValue,
         quantity: userItem.quantity,
         notes: userItem.notes || null,
-        // No grnLineItemId for Warehouse → Storefront transfers
+        batchStockId: userItem.batchStockId || null,
+        batchNumber: userItem.batchNumber || null,
+        batchBarcode: userItem.batchBarcode || null,
+        expiryDate: userItem.expiryDate ? new Date(userItem.expiryDate) : null,
       });
     } else if (transferSourceType === "Storefront") {
       // Validate storefront has sufficient stock
@@ -410,6 +416,10 @@ export const createTransfer = asyncErrorHandler(async (req, res, next) => {
         inventoryId: inventoryIdValue,
         quantity: userItem.quantity,
         notes: userItem.notes || null,
+        batchStockId: userItem.batchStockId || null,
+        batchNumber: userItem.batchNumber || null,
+        batchBarcode: userItem.batchBarcode || null,
+        expiryDate: userItem.expiryDate ? new Date(userItem.expiryDate) : null,
       });
     }
   }

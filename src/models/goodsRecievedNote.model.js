@@ -55,6 +55,24 @@ const grnLineItemSchema = new mongoose.Schema(
       maxlength: [500, "Notes cannot exceed 500 characters"],
       default: null,
     },
+    batchNumber: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    batchBarcode: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    expiryDate: {
+      type: Date,
+      default: null,
+    },
+    manufacturingDate: {
+      type: Date,
+      default: null,
+    },
   },
   {
     _id: true,

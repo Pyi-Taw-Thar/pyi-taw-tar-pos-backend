@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import BatchStock from "./batchStock.model.js";
 
 // Transfer Line Item Schema
 const transferLineItemSchema = new mongoose.Schema(
@@ -23,6 +24,25 @@ const transferLineItemSchema = new mongoose.Schema(
       type: String,
       trim: true,
       maxlength: [500, "Notes cannot exceed 500 characters"],
+      default: null,
+    },
+    batchStockId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "BatchStock",
+      default: null,
+    },
+    batchNumber: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    batchBarcode: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    expiryDate: {
+      type: Date,
       default: null,
     },
   },
@@ -339,6 +359,55 @@ transferSchema.methods._updateGRNToWarehouseStock = async function (
         runValidators: true,
       }
     );
+
+    // Update or create BatchStock in destination warehouse if batchNumber exists
+    if (grnLineItem.batchNumber) {
+      let barcode = grnLineItem.batchBarcode;
+      if (!barcode) {
+        barcode = await BatchStock.generateNextBatchBarcode(session);
+        grnLineItem.batchBarcode = barcode;
+        await GoodsRecievedNote.updateOne(
+          { _id: this.sourceId, "lineItems._id": grnLineItem._id },
+          { $set: { "lineItems.$.batchBarcode": barcode } },
+          { session }
+        );
+      }
+
+      const existingBatch = await BatchStock.findOne({
+        inventoryId: transferItem.inventoryId,
+        locationId: this.destinationWarehouseId,
+        batchNumber: grnLineItem.batchNumber,
+      }).session(session || null);
+
+      if (existingBatch) {
+        existingBatch.quantity += transferItem.quantity;
+        existingBatch.status = "active";
+        await existingBatch.save({ session });
+        transferItem.batchStockId = existingBatch._id;
+      } else {
+        const [createdBatch] = await BatchStock.create(
+          [
+            {
+              inventoryId: transferItem.inventoryId,
+              locationType: "warehouse",
+              locationId: this.destinationWarehouseId,
+              batchNumber: grnLineItem.batchNumber,
+              batchBarcode: barcode,
+              expiryDate: grnLineItem.expiryDate || null,
+              manufacturingDate: grnLineItem.manufacturingDate || null,
+              costPrice: grnLineItem.unitPrice || 0,
+              quantity: transferItem.quantity,
+              status: "active",
+            },
+          ],
+          { session }
+        );
+        transferItem.batchStockId = createdBatch._id;
+      }
+      transferItem.batchNumber = grnLineItem.batchNumber;
+      transferItem.batchBarcode = barcode;
+      transferItem.expiryDate = grnLineItem.expiryDate || null;
+    }
   }
 };
 
@@ -436,6 +505,55 @@ transferSchema.methods._updateGRNToStorefrontStock = async function (
         runValidators: true,
       }
     );
+
+    // Update or create BatchStock in destination storefront if batchNumber exists
+    if (grnLineItem.batchNumber) {
+      let barcode = grnLineItem.batchBarcode;
+      if (!barcode) {
+        barcode = await BatchStock.generateNextBatchBarcode(session);
+        grnLineItem.batchBarcode = barcode;
+        await GoodsRecievedNote.updateOne(
+          { _id: this.sourceId, "lineItems._id": grnLineItem._id },
+          { $set: { "lineItems.$.batchBarcode": barcode } },
+          { session }
+        );
+      }
+
+      const existingBatch = await BatchStock.findOne({
+        inventoryId: transferItem.inventoryId,
+        locationId: this.destinationStorefrontId,
+        batchNumber: grnLineItem.batchNumber,
+      }).session(session || null);
+
+      if (existingBatch) {
+        existingBatch.quantity += transferItem.quantity;
+        existingBatch.status = "active";
+        await existingBatch.save({ session });
+        transferItem.batchStockId = existingBatch._id;
+      } else {
+        const [createdBatch] = await BatchStock.create(
+          [
+            {
+              inventoryId: transferItem.inventoryId,
+              locationType: "storefront",
+              locationId: this.destinationStorefrontId,
+              batchNumber: grnLineItem.batchNumber,
+              batchBarcode: barcode,
+              expiryDate: grnLineItem.expiryDate || null,
+              manufacturingDate: grnLineItem.manufacturingDate || null,
+              costPrice: grnLineItem.unitPrice || 0,
+              quantity: transferItem.quantity,
+              status: "active",
+            },
+          ],
+          { session }
+        );
+        transferItem.batchStockId = createdBatch._id;
+      }
+      transferItem.batchNumber = grnLineItem.batchNumber;
+      transferItem.batchBarcode = barcode;
+      transferItem.expiryDate = grnLineItem.expiryDate || null;
+    }
   }
 };
 
@@ -517,6 +635,15 @@ transferSchema.methods._updateStorefrontToWarehouseStock = async function (
         new: true,
         runValidators: true,
       }
+    );
+
+    // Move batch stock from storefront to warehouse
+    await this._moveBatchStock(
+      transferItem,
+      this.sourceId,
+      "warehouse",
+      this.destinationWarehouseId,
+      session
     );
   }
 };
@@ -601,6 +728,141 @@ transferSchema.methods._updateWarehouseToStorefrontStock = async function (
         runValidators: true,
       }
     );
+
+    // Move batch stock from warehouse to storefront
+    await this._moveBatchStock(
+      transferItem,
+      this.sourceId,
+      "storefront",
+      this.destinationStorefrontId,
+      session
+    );
+  }
+};
+
+// Helper method: Move batch stock between locations
+transferSchema.methods._moveBatchStock = async function (
+  transferItem,
+  sourceLocationId,
+  destLocationType,
+  destLocationId,
+  session = null
+) {
+  let remainingToTransfer = transferItem.quantity;
+
+  // 1. If specific batch is identified
+  if (
+    transferItem.batchStockId ||
+    transferItem.batchBarcode ||
+    transferItem.batchNumber
+  ) {
+    let query = { locationId: sourceLocationId };
+    if (transferItem.batchStockId) {
+      query._id = transferItem.batchStockId;
+    } else if (transferItem.batchBarcode) {
+      query.batchBarcode = transferItem.batchBarcode;
+    } else {
+      query.inventoryId = transferItem.inventoryId;
+      query.batchNumber = transferItem.batchNumber;
+    }
+
+    const sourceBatch = await BatchStock.findOne(query).session(session || null);
+    if (sourceBatch) {
+      const transferQty = Math.min(sourceBatch.quantity, remainingToTransfer);
+      sourceBatch.quantity -= transferQty;
+      if (sourceBatch.quantity === 0) {
+        sourceBatch.status = "depleted";
+      }
+      await sourceBatch.save({ session });
+
+      // Destination BatchStock
+      const destBatch = await BatchStock.findOne({
+        inventoryId: transferItem.inventoryId,
+        locationId: destLocationId,
+        batchNumber: sourceBatch.batchNumber,
+      }).session(session || null);
+
+      if (destBatch) {
+        destBatch.quantity += transferQty;
+        destBatch.status = "active";
+        await destBatch.save({ session });
+      } else {
+        await BatchStock.create(
+          [
+            {
+              inventoryId: transferItem.inventoryId,
+              locationType: destLocationType,
+              locationId: destLocationId,
+              batchNumber: sourceBatch.batchNumber,
+              batchBarcode: sourceBatch.batchBarcode, // PRESERVES ORIGINAL STICKER BARCODE!
+              expiryDate: sourceBatch.expiryDate,
+              manufacturingDate: sourceBatch.manufacturingDate,
+              costPrice: sourceBatch.costPrice,
+              quantity: transferQty,
+              status: "active",
+            },
+          ],
+          { session }
+        );
+      }
+
+      transferItem.batchNumber = sourceBatch.batchNumber;
+      transferItem.batchBarcode = sourceBatch.batchBarcode;
+      transferItem.expiryDate = sourceBatch.expiryDate;
+      remainingToTransfer -= transferQty;
+    }
+  }
+
+  // 2. If no batch specified or remaining quantity remains, deduct from active batches (FEFO)
+  if (remainingToTransfer > 0) {
+    const sourceBatches = await BatchStock.find({
+      inventoryId: transferItem.inventoryId,
+      locationId: sourceLocationId,
+      quantity: { $gt: 0 },
+    })
+      .sort({ expiryDate: 1 })
+      .session(session || null);
+
+    for (const batch of sourceBatches) {
+      if (remainingToTransfer <= 0) break;
+      const transferQty = Math.min(batch.quantity, remainingToTransfer);
+      batch.quantity -= transferQty;
+      if (batch.quantity === 0) {
+        batch.status = "depleted";
+      }
+      await batch.save({ session });
+
+      const destBatch = await BatchStock.findOne({
+        inventoryId: transferItem.inventoryId,
+        locationId: destLocationId,
+        batchNumber: batch.batchNumber,
+      }).session(session || null);
+
+      if (destBatch) {
+        destBatch.quantity += transferQty;
+        destBatch.status = "active";
+        await destBatch.save({ session });
+      } else {
+        await BatchStock.create(
+          [
+            {
+              inventoryId: transferItem.inventoryId,
+              locationType: destLocationType,
+              locationId: destLocationId,
+              batchNumber: batch.batchNumber,
+              batchBarcode: batch.batchBarcode,
+              expiryDate: batch.expiryDate,
+              manufacturingDate: batch.manufacturingDate,
+              costPrice: batch.costPrice,
+              quantity: transferQty,
+              status: "active",
+            },
+          ],
+          { session }
+        );
+      }
+      remainingToTransfer -= transferQty;
+    }
   }
 };
 

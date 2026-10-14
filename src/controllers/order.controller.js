@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import Order from "../models/orders.model.js";
 import StorefrontInventory from "../models/storefrontInventory.model.js";
+import BatchStock from "../models/batchStock.model.js";
 import LocationProfile from "../models/locationProfile.model.js";
 import Inventory from "../models/inventory.model.js";
 import { getEffectiveFactor } from "../utils/uom.utils.js";
@@ -311,6 +312,7 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
               quantity: product.quantity,
               baseQuantity,
               unitPrice,
+              batches: product.batches || [],
             });
           }
 
@@ -332,52 +334,139 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
 
           // 4. Validate stock availability and deduct stock (only for storefront sales)
           if (!isDirectSale) {
-          for (const product of validatedProducts) {
-            const stockRecord = await StorefrontInventory.findOne(
-              {
-                inventoryId: product.inventoryId,
-                storefrontId: storefrontId,
-              },
-              null,
-              { session },
-            );
+            for (const product of validatedProducts) {
+              const stockRecord = await StorefrontInventory.findOne(
+                {
+                  inventoryId: product.inventoryId,
+                  storefrontId: storefrontId,
+                },
+                null,
+                { session },
+              );
 
-            if (!stockRecord) {
-              const inventoryItem = inventoryMap.get(
-                product.inventoryId.toString(),
-              );
-              throw new CustomError(
-                404,
-                `Stock record not found for product '${
-                  inventoryItem?.productCode || product.inventoryId
-                }' in storefront`,
-              );
+              if (!stockRecord) {
+                const inventoryItem = inventoryMap.get(
+                  product.inventoryId.toString(),
+                );
+                throw new CustomError(
+                  404,
+                  `Stock record not found for product '${
+                    inventoryItem?.productCode || product.inventoryId
+                  }' in storefront`,
+                );
+              }
+
+              // Check stock availability (stock is in base units)
+              const availableQuantity = stockRecord.quantity || 0;
+              const requestedBase = product.baseQuantity || product.quantity;
+              if (availableQuantity < requestedBase) {
+                const inventoryItem = inventoryMap.get(
+                  product.inventoryId.toString(),
+                );
+                throw new CustomError(
+                  400,
+                  `Insufficient stock for product '${
+                    inventoryItem?.productCode || product.inventoryId
+                  }' (${
+                    inventoryItem?.productName || "Unknown"
+                  }). Available: ${availableQuantity}, Requested: ${requestedBase}`,
+                );
+              }
+
+              // Deduct stock (use baseQuantity for stock deduction)
+              stockRecord.quantity -= requestedBase;
+              stockRecord.lastUpdated = new Date();
+              await stockRecord.save({ session });
+
+              // === Exact Scanned Batch Deduction & Multi-Batch Splitting ===
+              const finalAllocatedBatches = [];
+
+              if (product.batches && Array.isArray(product.batches) && product.batches.length > 0) {
+                // Verify that total scanned quantity equals requestedBase
+                const totalScannedQty = product.batches.reduce((sum, b) => sum + (Number(b.quantity) || 0), 0);
+                if (totalScannedQty !== requestedBase) {
+                  const inventoryItem = inventoryMap.get(product.inventoryId.toString());
+                  throw new CustomError(
+                    400,
+                    `Scanned batches quantity (${totalScannedQty}) does not match order quantity (${requestedBase}) for product '${inventoryItem?.productName || product.inventoryId}'`
+                  );
+                }
+
+                for (const b of product.batches) {
+                  let query = { locationId: storefrontId };
+                  if (b.batchStockId && mongoose.Types.ObjectId.isValid(b.batchStockId)) {
+                    query._id = b.batchStockId;
+                  } else if (b.batchBarcode) {
+                    query.batchBarcode = b.batchBarcode;
+                  } else if (b.batchNumber) {
+                    query.inventoryId = product.inventoryId;
+                    query.batchNumber = b.batchNumber;
+                  }
+
+                  const batchStock = await BatchStock.findOne(query).session(session);
+                  if (!batchStock) {
+                    throw new CustomError(
+                      404,
+                      `Batch stock not found for batch '${b.batchNumber || b.batchBarcode}' at this storefront`
+                    );
+                  }
+
+                  if (batchStock.quantity < b.quantity) {
+                    throw new CustomError(
+                      400,
+                      `Insufficient stock for batch '${batchStock.batchNumber}'. Available: ${batchStock.quantity}, Requested: ${b.quantity}`
+                    );
+                  }
+
+                  batchStock.quantity -= b.quantity;
+                  if (batchStock.quantity === 0) {
+                    batchStock.status = "depleted";
+                  }
+                  await batchStock.save({ session });
+
+                  finalAllocatedBatches.push({
+                    batchStockId: batchStock._id,
+                    batchNumber: batchStock.batchNumber,
+                    batchBarcode: batchStock.batchBarcode,
+                    expiryDate: batchStock.expiryDate,
+                    quantity: b.quantity,
+                  });
+                }
+              } else {
+                // Fallback: If no scanned batches provided (e.g. manual entry without scanner),
+                // auto-allocate from active batches using FEFO (earliest expiry first)
+                const activeBatches = await BatchStock.find({
+                  inventoryId: product.inventoryId,
+                  locationId: storefrontId,
+                  quantity: { $gt: 0 },
+                })
+                  .sort({ expiryDate: 1 })
+                  .session(session);
+
+                let remainingNeeded = requestedBase;
+                for (const batch of activeBatches) {
+                  if (remainingNeeded <= 0) break;
+                  const deductQty = Math.min(batch.quantity, remainingNeeded);
+                  batch.quantity -= deductQty;
+                  if (batch.quantity === 0) {
+                    batch.status = "depleted";
+                  }
+                  await batch.save({ session });
+
+                  finalAllocatedBatches.push({
+                    batchStockId: batch._id,
+                    batchNumber: batch.batchNumber,
+                    batchBarcode: batch.batchBarcode,
+                    expiryDate: batch.expiryDate,
+                    quantity: deductQty,
+                  });
+                  remainingNeeded -= deductQty;
+                }
+              }
+
+              product.batches = finalAllocatedBatches;
             }
-
-            // Check stock availability (stock is in base units)
-            const availableQuantity = stockRecord.quantity || 0;
-            const requestedBase = product.baseQuantity || product.quantity;
-            if (availableQuantity < requestedBase) {
-              const inventoryItem = inventoryMap.get(
-                product.inventoryId.toString(),
-              );
-              throw new CustomError(
-                400,
-                `Insufficient stock for product '${
-                  inventoryItem?.productCode || product.inventoryId
-                }' (${
-                  inventoryItem?.productName || "Unknown"
-                }). Available: ${availableQuantity}, Requested: ${requestedBase}`,
-              );
-            }
-
-            // Deduct stock (use baseQuantity for stock deduction)
-            stockRecord.quantity -= requestedBase;
-            stockRecord.lastUpdated = new Date();
-            await stockRecord.save({ session });
           }
-
-          } // End of stock deduction for storefront sales
 
           // 5. Create order with calculated values
           const orderData = {
