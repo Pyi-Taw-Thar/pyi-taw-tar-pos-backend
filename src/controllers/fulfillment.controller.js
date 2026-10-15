@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import Order from "../models/orders.model.js";
+import EcommerceOrder from "../models/ecommerceOrder.model.js";
 import BatchStock from "../models/batchStock.model.js";
 import StorefrontInventory from "../models/storefrontInventory.model.js";
 import Inventory from "../models/inventory.model.js";
@@ -190,6 +191,15 @@ export const fulfillOrder = asyncErrorHandler(async (req, res, next) => {
       // Mark order as completed
       order.orderStatus = "completed";
       await order.save({ session });
+
+      // If this order originated from an ecommerce order, update ecommerce order status to shipped
+      if (order.ecommerceOrderId) {
+        await EcommerceOrder.findByIdAndUpdate(
+          order.ecommerceOrderId,
+          { status: "shipped" },
+          { session }
+        );
+      }
 
       await order.populate("storefrontId", "locationName locationCode");
       await order.populate("ordersProducts.inventoryId", "productName productCode SKU barcode unitOfMeasure");

@@ -83,6 +83,19 @@ const ecommerceOrderSchema = new mongoose.Schema({
     type: Boolean,
     default: false,
   },
+  fulfillmentOrderId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Order",
+    default: null,
+  },
+  isSentToFulfillment: {
+    type: Boolean,
+    default: false,
+  },
+  sentToFulfillmentAt: {
+    type: Date,
+    default: null,
+  },
 }, { timestamps: true });
 
 ecommerceOrderSchema.pre("save", async function () {

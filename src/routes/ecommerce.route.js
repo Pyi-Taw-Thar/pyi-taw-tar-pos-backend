@@ -11,6 +11,7 @@ import {
   getEcommerceOrderById,
   updateEcommerceOrderStatus,
   updateEcommerceOrderProducts,
+  sendOrderToFulfillment,
   resetPurchaseLimit,
   resetAllPurchaseLimits,
   getPurchaseUsage,
@@ -39,6 +40,7 @@ router.get("/ecommerce/admin/orders", protect, permissionGranted("owner", "admin
 router.get("/ecommerce/admin/orders/:id", protect, permissionGranted("owner", "admin"), getEcommerceOrderById);
 router.patch("/ecommerce/admin/orders/:id/status", protect, permissionGranted("owner", "admin"), updateEcommerceOrderStatus);
 router.patch("/ecommerce/admin/orders/:id/products", protect, permissionGranted("owner", "admin"), updateEcommerceOrderProducts);
+router.post("/ecommerce/admin/orders/:id/send-to-fulfillment", protect, permissionGranted("owner", "admin"), sendOrderToFulfillment);
 
 router.post("/ecommerce/admin/reset-purchase-limit", protect, permissionGranted("owner", "admin"), resetPurchaseLimit);
 router.post("/ecommerce/admin/reset-all-purchase-limits", protect, permissionGranted("owner", "admin"), resetAllPurchaseLimits);

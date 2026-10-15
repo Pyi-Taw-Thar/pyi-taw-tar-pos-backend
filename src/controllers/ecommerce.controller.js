@@ -3,6 +3,7 @@ import StorefrontInventory from "../models/storefrontInventory.model.js";
 import Inventory from "../models/inventory.model.js";
 import LocationProfile from "../models/locationProfile.model.js";
 import EcommerceOrder from "../models/ecommerceOrder.model.js";
+import Order from "../models/orders.model.js";
 import Customer from "../models/customer.model.js";
 import PurchaseReset from "../models/purchaseReset.model.js";
 import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
@@ -646,7 +647,8 @@ export const getAllEcommerceOrders = asyncErrorHandler(async (req, res, next) =>
       .skip(skip)
       .limit(limitNum)
       .populate("customerId", "name phone")
-      .populate("products.inventoryId", "productName productCode SKU images"),
+      .populate("products.inventoryId", "productName productCode SKU images")
+      .populate("fulfillmentOrderId", "orderNumber orderStatus"),
     EcommerceOrder.countDocuments(filter),
   ]);
 
@@ -671,7 +673,8 @@ export const getEcommerceOrderById = asyncErrorHandler(async (req, res, next) =>
 
   const order = await EcommerceOrder.findById(id)
     .populate("customerId", "name phone address township")
-    .populate("products.inventoryId", "productName productCode SKU images");
+    .populate("products.inventoryId", "productName productCode SKU images")
+    .populate("fulfillmentOrderId", "orderNumber orderStatus");
 
   if (!order || order.isDeleted) {
     return next(new CustomError(404, "Order not found"));
@@ -774,6 +777,135 @@ export const updateEcommerceOrderStatus = asyncErrorHandler(async (req, res, nex
         ? "Order cancelled and stock restored successfully."
         : "Order status updated successfully.",
     data: order,
+  });
+});
+
+export const sendOrderToFulfillment = asyncErrorHandler(async (req, res, next) => {
+  const { id } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return next(new CustomError(400, "Invalid order ID format"));
+  }
+
+  const ecommerceOrder = await EcommerceOrder.findOne({
+    _id: id,
+    isDeleted: false,
+  }).populate("customerId");
+
+  if (!ecommerceOrder) {
+    return next(new CustomError(404, "Ecommerce order not found"));
+  }
+
+  if (ecommerceOrder.status === "cancelled") {
+    return next(new CustomError(400, "Cannot send cancelled order to fulfillment"));
+  }
+
+  if (ecommerceOrder.isSentToFulfillment && ecommerceOrder.fulfillmentOrderId) {
+    const existingFulfillment = await Order.findOne({
+      _id: ecommerceOrder.fulfillmentOrderId,
+      isDeleted: false,
+    });
+    if (existingFulfillment) {
+      return next(
+        new CustomError(
+          400,
+          `Order is already sent to fulfillment (${existingFulfillment.orderNumber})`
+        )
+      );
+    }
+  }
+
+  if (!ecommerceStorefrontId || !mongoose.Types.ObjectId.isValid(ecommerceStorefrontId)) {
+    return next(new CustomError(500, "Ecommerce storefront is not configured"));
+  }
+
+  const storefrontId = new mongoose.Types.ObjectId(ecommerceStorefrontId);
+  const storefront = await LocationProfile.findOne({
+    _id: storefrontId,
+    type: "storefront",
+    isDeleted: false,
+  });
+
+  if (!storefront) {
+    return next(new CustomError(404, "Ecommerce storefront location not found"));
+  }
+
+  const customer = ecommerceOrder.customerId;
+  const customerName =
+    customer?.name || ecommerceOrder.shippingAddress?.label || "Ecommerce Customer";
+  const customerPhone = customer?.phone || null;
+
+  // Generate order number for fulfillment Order
+  const orderNumber = await Order.generateOrderNumber();
+
+  // Prepare products for Order
+  const ordersProducts = ecommerceOrder.products.map((p) => ({
+    inventoryId: p.inventoryId,
+    quantity: p.quantity,
+    unit: p.unit || null,
+    factor: p.factor || 1,
+    baseQuantity: p.baseQuantity || p.quantity * (p.factor || 1),
+    unitPrice: p.unitPrice,
+    batches: [],
+  }));
+
+  const noteParts = [
+    `[Ecommerce: ${ecommerceOrder.orderNumber}]`,
+    ecommerceOrder.shippingAddress?.addressLine,
+    ecommerceOrder.shippingAddress?.city,
+    ecommerceOrder.note ? `Note: ${ecommerceOrder.note}` : null,
+  ].filter(Boolean);
+
+  const paymentType = ecommerceOrder.paymentStatus === "paid" ? "paid" : "credit";
+
+  // Create Order in pending status for warehouse fulfillment queue
+  // (Note: StorefrontInventory was already deducted upon ecommerce checkout, so we don't deduct again!)
+  const fulfillmentOrder = await Order.create({
+    orderNumber,
+    saleType: "storefront",
+    storefrontId,
+    customerName,
+    customerPhone,
+    creditPersonId: customer?.isCreditPerson ? customer._id : null,
+    ordersProducts,
+    subTotal: ecommerceOrder.totalAmount,
+    tax: 0,
+    discount: 0,
+    finalAmount: ecommerceOrder.totalAmount,
+    paidAmount: ecommerceOrder.paymentStatus === "paid" ? ecommerceOrder.totalAmount : 0,
+    paymentType,
+    paymentMethod: ecommerceOrder.paymentMethod || "cash",
+    orderStatus: "pending",
+    soldBy: req.user._id,
+    note: noteParts.join(" | "),
+    ecommerceOrderId: ecommerceOrder._id,
+    orderDate: new Date(),
+  });
+
+  // Update EcommerceOrder status and fulfillment linkage
+  ecommerceOrder.status = "confirmed";
+  ecommerceOrder.isSentToFulfillment = true;
+  ecommerceOrder.fulfillmentOrderId = fulfillmentOrder._id;
+  ecommerceOrder.sentToFulfillmentAt = new Date();
+  await ecommerceOrder.save();
+
+  logActivity({
+    admin: req.user?._id,
+    action: "create",
+    feature: "ecommerce_order",
+    description: `Sent ecommerce order ${ecommerceOrder.orderNumber} to warehouse fulfillment as ${fulfillmentOrder.orderNumber}`,
+    targetId: ecommerceOrder._id,
+    targetModel: "EcommerceOrder",
+    ip: req.ip,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: "Order successfully sent to warehouse fulfillment",
+    data: {
+      ecommerceOrder,
+      fulfillmentOrder,
+    },
   });
 });
 

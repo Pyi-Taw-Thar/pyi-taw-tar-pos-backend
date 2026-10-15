@@ -172,6 +172,11 @@ const orderSchema = new mongoose.Schema(
       type: Number,
       default: null,
     },
+    ecommerceOrderId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "EcommerceOrder",
+      default: null,
+    },
   },
   {
     timestamps: true,
