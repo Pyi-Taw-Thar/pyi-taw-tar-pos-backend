@@ -60,7 +60,7 @@ export const getPendingFulfillmentOrders = asyncErrorHandler(async (req, res, ne
 // POST /api/v1/fulfillment/:orderId - Complete fulfillment with scanned batch barcodes
 export const fulfillOrder = asyncErrorHandler(async (req, res, next) => {
   const { orderId } = req.params;
-  const { fulfilledProducts } = req.body;
+  const fulfilledProducts = req.body.fulfilledProducts || req.body.items;
 
   if (!mongoose.Types.ObjectId.isValid(orderId)) {
     return next(new CustomError(400, "Invalid order ID format"));
@@ -95,11 +95,16 @@ export const fulfillOrder = asyncErrorHandler(async (req, res, next) => {
 
       // Validate each ordered product has matching fulfillment
       for (const orderProduct of order.ordersProducts) {
-        const invIdStr = orderProduct.inventoryId.toString();
+        const invIdStr = (
+          typeof orderProduct.inventoryId === "object" && orderProduct.inventoryId?._id
+            ? orderProduct.inventoryId._id
+            : orderProduct.inventoryId
+        ).toString();
+
         const fulfillment = fulfilledProducts.find(
           (f) =>
-            (f.orderProductId && f.orderProductId === orderProduct._id.toString()) ||
-            (f.inventoryId && f.inventoryId.toString() === invIdStr)
+            (f.orderProductId && f.orderProductId.toString() === orderProduct._id.toString()) ||
+            (f.inventoryId && (f.inventoryId._id || f.inventoryId).toString() === invIdStr)
         );
 
         if (!fulfillment) {

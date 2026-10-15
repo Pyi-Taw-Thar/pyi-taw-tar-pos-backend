@@ -16,11 +16,12 @@ import { logActivity } from "../services/activityLog.service.js";
 // Sorts by quantity descending so the highest qualifying threshold wins
 const findWholesalePrice = (wholesalePrices, unit, quantity) => {
   if (!wholesalePrices?.length) return null;
-  const sorted = [...wholesalePrices].sort((a, b) => b.quantity - a.quantity);
+  const unitNorm = (unit || "").trim().toLowerCase();
+  const sorted = [...wholesalePrices].sort((a, b) => Number(b.quantity) - Number(a.quantity));
   const match = sorted.find((wp) => {
-    const unitMatch =
-      !wp.unit || (unit && wp.unit.toLowerCase() === unit.toLowerCase());
-    const qtyMatch = quantity >= wp.quantity;
+    const wpUnitNorm = (wp.unit || "").trim().toLowerCase();
+    const unitMatch = !wpUnitNorm || (unitNorm && wpUnitNorm === unitNorm);
+    const qtyMatch = Number(quantity) >= Number(wp.quantity);
     return unitMatch && qtyMatch;
   });
   return match ? match.price : null;
@@ -292,7 +293,7 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
             }
 
             let unitPrice;
-            if (isDirectSale && product.unitPrice != null) {
+            if (product.unitPrice != null) {
               unitPrice = product.unitPrice;
             } else {
               const wholesalePrice = findWholesalePrice(
