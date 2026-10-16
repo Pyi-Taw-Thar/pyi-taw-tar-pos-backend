@@ -20,8 +20,17 @@ export const scanBatchBarcode = asyncErrorHandler(async (req, res, next) => {
     return next(new CustomError(400, "Batch barcode is required"));
   }
 
+  const trimmed = String(batchBarcode).trim();
+  // Support flexible barcode matching (e.g. B00006 vs B000006 or B6)
+  let barcodeFilter = trimmed;
+  const bMatch = trimmed.match(/^B(\d+)$/i);
+  if (bMatch) {
+    const num = parseInt(bMatch[1], 10);
+    barcodeFilter = { $regex: new RegExp(`^B0*${num}$`, "i") };
+  }
+
   const query = {
-    batchBarcode: String(batchBarcode).trim(),
+    batchBarcode: barcodeFilter,
   };
 
   if (locationId) {
@@ -31,18 +40,28 @@ export const scanBatchBarcode = asyncErrorHandler(async (req, res, next) => {
     query.locationId = new mongoose.Types.ObjectId(locationId);
   }
 
-  const batch = await BatchStock.findOne(query)
+  let batch = await BatchStock.findOne(query)
     .populate(
       "inventoryId",
       "productName productCode SKU category buyingPrice sellingPrice uom wholesalePrices chemicalNames"
     )
     .populate("locationId", "locationName locationCode type");
 
+  // Fallback: If not found at the specific location, check at any location (e.g. warehouse)
+  if (!batch && locationId) {
+    batch = await BatchStock.findOne({ batchBarcode: barcodeFilter })
+      .populate(
+        "inventoryId",
+        "productName productCode SKU category buyingPrice sellingPrice uom wholesalePrices chemicalNames"
+      )
+      .populate("locationId", "locationName locationCode type");
+  }
+
   if (!batch) {
     return next(
       new CustomError(
         404,
-        `Batch with barcode '${batchBarcode}' not found at this location`
+        `Batch with barcode '${batchBarcode}' not found`
       )
     );
   }

@@ -30,12 +30,12 @@ export const createCreditPerson = asyncErrorHandler(async (req, res, next) => {
   if (customer) {
     // Customer exists — mark as credit person
     customer.isCreditPerson = true;
-    if (name) customer.name = name;
+    if (name) customer.name = typeof name === "string" ? name.trim().toLowerCase() : name;
     await customer.save();
   } else {
     // Customer doesn't exist — create new one
     customer = await Customer.create({
-      name,
+      name: typeof name === "string" ? name.trim().toLowerCase() : name,
       phone,
       isCreditPerson: true,
       // Generate a random password for credit-person-only customers
@@ -92,7 +92,7 @@ export const updateCreditPerson = asyncErrorHandler(async (req, res, next) => {
   }
 
   const updateData = {};
-  if (name !== undefined) updateData.name = name;
+  if (name !== undefined) updateData.name = typeof name === "string" ? name.trim().toLowerCase() : name;
   if (phone !== undefined) updateData.phone = phone;
   if (blacklist !== undefined) {
     updateData.blacklist = blacklist;

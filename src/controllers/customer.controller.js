@@ -23,7 +23,7 @@ export const register = asyncErrorHandler(async (req, res, next) => {
   }
 
   const customer = await Customer.create({
-    name,
+    name: name.trim().toLowerCase(),
     phone,
     password,
     address: address || "",
@@ -89,7 +89,7 @@ export const login = asyncErrorHandler(async (req, res, next) => {
     }
 
     if (!customer.name) {
-      customer.name = name.trim();
+      customer.name = name.trim().toLowerCase();
       await customer.save();
     }
   }
@@ -173,7 +173,7 @@ export const updateMe = asyncErrorHandler(async (req, res, next) => {
   const { name, phone, password, address, township } = req.body;
   const customer = req.customer;
 
-  if (name) customer.name = name;
+  if (name) customer.name = typeof name === "string" ? name.trim().toLowerCase() : name;
 
   if (phone && phone !== customer.phone) {
     const existing = await Customer.findOne({ phone });
@@ -218,7 +218,7 @@ export const updateCustomerByAdmin = asyncErrorHandler(async (req, res, next) =>
     customer.tier = tier;
   }
 
-  if (name !== undefined) customer.name = name;
+  if (name !== undefined) customer.name = typeof name === "string" ? name.trim().toLowerCase() : name;
 
   if (phone !== undefined) {
     if (phone !== customer.phone) {
@@ -355,7 +355,7 @@ export const importCustomersFromExcel = asyncErrorHandler(async (req, res, next)
   for (const row of rows) {
     try {
       const nameVal = getRowValue(row, "Name");
-      const name = nameVal ? nameVal.toString().trim().replace(/[\u200B-\u200D\uFEFF]/g, '') : '';
+      const name = nameVal ? nameVal.toString().trim().replace(/[\u200B-\u200D\uFEFF]/g, '').toLowerCase() : '';
       if (!name) {
         skipped++;
         continue;

@@ -7,6 +7,7 @@ const customerSchema = new mongoose.Schema({
     type: String,
     required: [true, "Name is required"],
     trim: true,
+    lowercase: true,
   },
   phone: {
     type: String,
