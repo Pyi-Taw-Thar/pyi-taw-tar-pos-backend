@@ -34,6 +34,35 @@ const productSchema = new mongoose.Schema({
     required: [true, "Subtotal is required"],
     min: [0, "Subtotal cannot be negative"],
   },
+  originalQuantity: {
+    type: Number,
+    default: null,
+  },
+  batches: [
+    {
+      batchStockId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "BatchStock",
+      },
+      batchNumber: {
+        type: String,
+        trim: true,
+      },
+      batchBarcode: {
+        type: String,
+        trim: true,
+        default: null,
+      },
+      expiryDate: {
+        type: Date,
+        default: null,
+      },
+      quantity: {
+        type: Number,
+        default: 0,
+      },
+    },
+  ],
 });
 
 const ecommerceOrderSchema = new mongoose.Schema({
@@ -77,6 +106,18 @@ const ecommerceOrderSchema = new mongoose.Schema({
   note: {
     type: String,
     trim: true,
+    default: null,
+  },
+  isEdited: {
+    type: Boolean,
+    default: false,
+  },
+  editedReason: {
+    type: String,
+    default: null,
+  },
+  editedAt: {
+    type: Date,
     default: null,
   },
   isDeleted: {

@@ -13,6 +13,11 @@ import {
   getCreditPersonCustomers,
   importCustomersFromExcel,
 } from "../controllers/customer.controller.js";
+import {
+  getMyNotifications,
+  markNotificationAsRead,
+  markAllNotificationsAsRead,
+} from "../controllers/customerNotification.controller.js";
 import { customerProtect } from "../middlewares/customerAuth.js";
 import { protect, permissionGranted } from "../controllers/administrationPolicy.controller.js";
 import validate from "../middlewares/validate.middleware.js";
@@ -30,6 +35,12 @@ router.post("/customer/register", validate(customerRegisterSchema), register);
 router.post("/customer/login", validate(customerLoginSchema), login);
 router.get("/customer/me", customerProtect, getMe);
 router.patch("/customer/me", customerProtect, validate(updateMeSchema), updateMe);
+
+// Customer notifications
+router.get("/customer/notifications", customerProtect, getMyNotifications);
+router.patch("/customer/notifications/read-all", customerProtect, markAllNotificationsAsRead);
+router.patch("/customer/notifications/:id/read", customerProtect, markNotificationAsRead);
+
 router.get("/customer", protect, permissionGranted("owner", "admin"), getAllCustomers);
 router.get("/customer/townships", protect, permissionGranted("owner", "admin"), getAllTownships);
 router.patch("/customer/:id", protect, permissionGranted("owner", "admin"), updateCustomerByAdmin);

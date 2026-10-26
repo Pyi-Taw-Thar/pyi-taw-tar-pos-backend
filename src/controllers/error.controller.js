@@ -66,6 +66,14 @@ const prodErrors = (res, error) => {
 };
 
 export const globalErrorHandler = (error, req, res, next) => {
+  if (error.name === "TokenExpiredError") {
+    error.statusCode = 401;
+    error.message = "JWT has expired. Please login again";
+  } else if (error.name === "JsonWebTokenError") {
+    error.statusCode = 401;
+    error.message = "Invalid token. Please login again";
+  }
+
   error.statusCode = error.statusCode || 500;
   error.success = error.success !== undefined ? error.success : false;
 

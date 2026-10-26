@@ -29,6 +29,9 @@ export const createCreditPayment = asyncErrorHandler(async (req, res, next) => {
 
   // Start MongoDB session for transaction
   const session = await mongoose.startSession();
+  // Commit ပြီးမှ response / activity log ပို့ရန်
+  let responseBody = null;
+  let activityLog = null;
 
   try {
     // Start transaction
@@ -132,8 +135,8 @@ export const createCreditPayment = asyncErrorHandler(async (req, res, next) => {
         paidAmount: order.paidAmount, // Include updated paidAmount
       };
 
-      // 10. Send response
-      logActivity({
+      // 10. Response / activity log ကို commit ပြီးမှ ပို့ရန် သိမ်း
+      activityLog = {
         admin: addedBy,
         action: "create_payment",
         feature: "credit",
@@ -142,8 +145,8 @@ export const createCreditPayment = asyncErrorHandler(async (req, res, next) => {
         targetModel: "CreditRecord",
         metadata: { orderId: order._id, paidAmount, orderNumber: order.orderNumber },
         ip: req.ip,
-      });
-      res.status(201).json({
+      };
+      responseBody = {
         success: true,
         message: "Credit payment recorded successfully",
         data: {
@@ -159,8 +162,11 @@ export const createCreditPayment = asyncErrorHandler(async (req, res, next) => {
             isFullyPaid,
           },
         },
-      });
+      };
     });
+
+    if (activityLog) logActivity(activityLog);
+    res.status(201).json(responseBody);
   } catch (error) {
     // Handle transaction errors
     if (error instanceof CustomError) {
@@ -633,6 +639,8 @@ export const hardDeleteCreditRecord = asyncErrorHandler(
 
     // Start MongoDB session for transaction
     const session = await mongoose.startSession();
+    // Commit ပြီးမှ response ပို့ရန်
+    let responseBody = null;
 
     try {
       // Start transaction
@@ -697,8 +705,8 @@ export const hardDeleteCreditRecord = asyncErrorHandler(
           newPaidAmount: newOrderPaidAmount,
         };
 
-        // 9. Send response
-        res.status(200).json({
+        // 9. Response ကို commit ပြီးမှ ပို့ရန် သိမ်း
+        responseBody = {
           success: true,
           message: "Credit record hard deleted successfully",
           data: {
@@ -714,8 +722,10 @@ export const hardDeleteCreditRecord = asyncErrorHandler(
               ),
             },
           },
-        });
+        };
       });
+
+      res.status(200).json(responseBody);
     } catch (error) {
       // Handle transaction errors
       if (error instanceof CustomError) {

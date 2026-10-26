@@ -823,6 +823,8 @@ export const updateOrderCreditPersonId = asyncErrorHandler(
 
     // Start MongoDB session for transaction
     const session = await mongoose.startSession();
+    // Commit ပြီးမှ response ပို့ရန်
+    let responseBody = null;
 
     try {
       // Start transaction
@@ -870,13 +872,15 @@ export const updateOrderCreditPersonId = asyncErrorHandler(
           "productName productCode SKU",
         );
 
-        // 7. Send response
-        res.status(200).json({
+        // 7. Response ကို commit ပြီးမှ ပို့ရန် သိမ်း
+        responseBody = {
           success: true,
           message: "Credit person ID updated successfully",
           data: order,
-        });
+        };
       });
+
+      res.status(200).json(responseBody);
     } catch (error) {
       // Handle transaction errors
       if (error instanceof CustomError) {
@@ -936,6 +940,8 @@ export const updateOrderPaidAmount = asyncErrorHandler(
 
     // Start MongoDB session for transaction
     const session = await mongoose.startSession();
+    // Commit ပြီးမှ response ပို့ရန်
+    let responseBody = null;
 
     try {
       // Start transaction
@@ -964,13 +970,15 @@ export const updateOrderPaidAmount = asyncErrorHandler(
         await order.populate("creditPersonId", "name phone address township");
         await order.populate("soldBy", "name role");
 
-        // 4. Send response
-        res.status(200).json({
+        // 4. Response ကို commit ပြီးမှ ပို့ရန် သိမ်း
+        responseBody = {
           success: true,
           message: "Order paid amount updated successfully",
           data: order,
-        });
+        };
       });
+
+      res.status(200).json(responseBody);
     } catch (error) {
       // Handle transaction errors
       if (error instanceof CustomError) {
@@ -1105,6 +1113,9 @@ export const addOrderItems = asyncErrorHandler(async (req, res, next) => {
 
   // Start MongoDB session for transaction
   const session = await mongoose.startSession();
+  // Commit ပြီးမှ response / activity log ပို့ရန်
+  let responseBody = null;
+  let activityLog = null;
 
   try {
     // Start transaction
@@ -1325,7 +1336,7 @@ export const addOrderItems = asyncErrorHandler(async (req, res, next) => {
       await order.populate("creditPersonId", "name phone address township");
       await order.populate("soldBy", "name role");
 
-      logActivity({
+      activityLog = {
         admin: req.user._id,
         action: "add_items",
         feature: "order",
@@ -1333,15 +1344,18 @@ export const addOrderItems = asyncErrorHandler(async (req, res, next) => {
         targetId: order._id,
         targetModel: "Order",
         ip: req.ip,
-      });
+      };
 
-      // 9. Send response
-      res.status(200).json({
+      // 9. Response ကို commit ပြီးမှ ပို့ရန် သိမ်း
+      responseBody = {
         success: true,
         message: "Order items added successfully",
         data: order,
-      });
+      };
     });
+
+    if (activityLog) logActivity(activityLog);
+    res.status(200).json(responseBody);
   } catch (error) {
     // Handle transaction errors
     if (error instanceof CustomError) {
@@ -1442,6 +1456,9 @@ export const removeOrderItems = asyncErrorHandler(async (req, res, next) => {
 
   // Start MongoDB session for transaction
   const session = await mongoose.startSession();
+  // Commit ပြီးမှ response / activity log ပို့ရန်
+  let responseBody = null;
+  let activityLog = null;
 
   try {
     // Start transaction
@@ -1600,7 +1617,7 @@ export const removeOrderItems = asyncErrorHandler(async (req, res, next) => {
       await order.populate("creditPersonId", "name phone address township");
       await order.populate("soldBy", "name role");
 
-      logActivity({
+      activityLog = {
         admin: req.user._id,
         action: "remove_items",
         feature: "order",
@@ -1608,15 +1625,18 @@ export const removeOrderItems = asyncErrorHandler(async (req, res, next) => {
         targetId: order._id,
         targetModel: "Order",
         ip: req.ip,
-      });
+      };
 
-      // 11. Send response
-      res.status(200).json({
+      // 11. Response ကို commit ပြီးမှ ပို့ရန် သိမ်း
+      responseBody = {
         success: true,
         message: "Order items removed successfully",
         data: order,
-      });
+      };
     });
+
+    if (activityLog) logActivity(activityLog);
+    res.status(200).json(responseBody);
   } catch (error) {
     // Handle transaction errors
     if (error instanceof CustomError) {

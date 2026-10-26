@@ -32,6 +32,9 @@ export const createSupplierCreditPayment = asyncErrorHandler(
 
     // Start MongoDB session for transaction
     const session = await mongoose.startSession();
+    // Commit ပြီးမှ response / activity log ပို့ရန်
+    let responseBody = null;
+    let activityLog = null;
 
     try {
       await session.withTransaction(async () => {
@@ -97,7 +100,8 @@ export const createSupplierCreditPayment = asyncErrorHandler(
           purchase.totalAmount - purchase.paidAmount,
         );
 
-        logActivity({
+        // Response / activity log ကို commit ပြီးမှ ပို့ရန် သိမ်း
+        activityLog = {
           admin: addedBy,
           action: "create_payment",
           feature: "supplier_credit",
@@ -110,9 +114,9 @@ export const createSupplierCreditPayment = asyncErrorHandler(
             paidAmount,
           },
           ip: req.ip,
-        });
+        };
 
-        res.status(201).json({
+        responseBody = {
           success: true,
           message: "Supplier credit payment recorded successfully",
           data: {
@@ -126,8 +130,11 @@ export const createSupplierCreditPayment = asyncErrorHandler(
               newRemainingBalance,
             },
           },
-        });
+        };
       });
+
+      if (activityLog) logActivity(activityLog);
+      res.status(201).json(responseBody);
     } catch (error) {
       if (error instanceof CustomError) {
         return next(error);
@@ -367,6 +374,9 @@ export const deleteSupplierCreditPayment = asyncErrorHandler(
     }
 
     const session = await mongoose.startSession();
+    // Commit ပြီးမှ response / activity log ပို့ရန်
+    let responseBody = null;
+    let activityLog = null;
 
     try {
       await session.withTransaction(async () => {
@@ -413,7 +423,8 @@ export const deleteSupplierCreditPayment = asyncErrorHandler(
         // Hard delete the payment record
         await SupplierCreditPayment.findByIdAndDelete(id).session(session);
 
-        logActivity({
+        // Response / activity log ကို commit ပြီးမှ ပို့ရန် သိမ်း
+        activityLog = {
           admin: req.user._id,
           action: "delete_payment",
           feature: "supplier_credit",
@@ -426,9 +437,9 @@ export const deleteSupplierCreditPayment = asyncErrorHandler(
             deletedAmount: paymentAmount,
           },
           ip: req.ip,
-        });
+        };
 
-        res.status(200).json({
+        responseBody = {
           success: true,
           message: "Supplier credit payment deleted successfully",
           data: {
@@ -444,8 +455,11 @@ export const deleteSupplierCreditPayment = asyncErrorHandler(
               ),
             },
           },
-        });
+        };
       });
+
+      if (activityLog) logActivity(activityLog);
+      res.status(200).json(responseBody);
     } catch (error) {
       if (error instanceof CustomError) {
         return next(error);

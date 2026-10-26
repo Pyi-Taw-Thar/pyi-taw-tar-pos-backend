@@ -569,7 +569,7 @@ export const getGRNById = asyncErrorHandler(async (req, res, next) => {
     })
     .populate(
       "lineItems.inventoryId",
-      "productName productCode SKU category buyingPrice sellingPrice"
+      "productName productCode SKU category buyingPrice sellingPrice unitOfMeasure uomConversions"
     );
 
   if (!grn) {
@@ -751,7 +751,7 @@ export const updateGRNLineItems = asyncErrorHandler(async (req, res, next) => {
   });
   await grn.populate(
     "lineItems.inventoryId",
-    "productName productCode SKU category buyingPrice sellingPrice"
+    "productName productCode SKU category buyingPrice sellingPrice unitOfMeasure uomConversions"
   );
 
   logActivity({

@@ -135,8 +135,8 @@ const orderSchema = new mongoose.Schema(
     orderStatus: {
       type: String,
       enum: {
-        values: ["pending", "completed", "cancelled"],
-        message: "Order status must be pending, completed, or cancelled",
+        values: ["pending", "partially_fulfilled", "completed", "cancelled"],
+        message: "Order status must be pending, partially_fulfilled, completed, or cancelled",
       },
       default: "pending",
     },

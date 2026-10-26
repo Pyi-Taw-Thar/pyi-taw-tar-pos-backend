@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import StorefrontInventory from "../models/storefrontInventory.model.js";
 import Inventory from "../models/inventory.model.js";
+import BatchStock from "../models/batchStock.model.js";
 import LocationProfile from "../models/locationProfile.model.js";
 import EcommerceOrder from "../models/ecommerceOrder.model.js";
 import Order from "../models/orders.model.js";
@@ -8,10 +9,22 @@ import Customer from "../models/customer.model.js";
 import PurchaseReset from "../models/purchaseReset.model.js";
 import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 import CustomError from "../utils/customError.js";
+import { getEffectiveFactor } from "../utils/uom.utils.js";
 import { logActivity } from "../services/activityLog.service.js";
 import { getTierMultiplier } from "../services/customerTier.service.js";
+import { createAndSendCustomerNotification } from "../services/customerNotification.service.js";
 
 const ecommerceStorefrontId = process.env.ECOMMERCE_STOREFRONT_ID;
+
+// Admin က status API ဖြင့် ကိုယ်တိုင် ပြောင်းခွင့်ရှိသော transition များ
+// (pending → confirmed = sendOrderToFulfillment, confirmed → shipped = fulfillment complete ဖြင့်သာ)
+const MANUAL_STATUS_TRANSITIONS = {
+  pending: ["cancelled"],
+  confirmed: ["cancelled"],
+  shipped: ["delivered"],
+  delivered: [],
+  cancelled: [],
+};
 
 export const getBrands = asyncErrorHandler(async (req, res, next) => {
   if (!ecommerceStorefrontId) {
@@ -157,7 +170,7 @@ export const getCategories = asyncErrorHandler(async (req, res, next) => {
 });
 
 export const getProducts = asyncErrorHandler(async (req, res, next) => {
-  const { page, limit, category, search, brand, limitedOnly } = req.query;
+  const { page, limit, category, subCategory, search, brand, limitedOnly, id } = req.query;
   const hasPagination = page !== undefined;
   const pageNum = parseInt(page) || 1;
   const limitNum = parseInt(limit) || 20;
@@ -173,6 +186,14 @@ export const getProducts = asyncErrorHandler(async (req, res, next) => {
   const storefrontObjId = new mongoose.Types.ObjectId(ecommerceStorefrontId);
 
   const matchStage = { storefrontId: storefrontObjId };
+
+  // ProductDetail page ကို direct link ဖြင့်ဖွင့်သည့်အခါ product တစ်ခုတည်း ရယူရန်
+  if (id !== undefined) {
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return next(new CustomError(400, "Invalid product id"));
+    }
+    matchStage.inventoryId = new mongoose.Types.ObjectId(id);
+  }
 
   const buildPipeline = (forCount = false) => {
     const pipe = [
@@ -195,6 +216,13 @@ export const getProducts = asyncErrorHandler(async (req, res, next) => {
 
     if (category) {
       pipe.push({ $match: { "inventory.category": category } });
+    }
+
+    if (subCategory) {
+      const escaped = subCategory.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      pipe.push({
+        $match: { "inventory.subCategory": { $regex: `^${escaped}$`, $options: "i" } },
+      });
     }
 
     if (brand) {
@@ -465,17 +493,7 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
       }
     }
 
-    let unitPrice = inventory.sellingPrice * factor;
-    if (inventory.wholesalePrices?.length > 0) {
-      const matchingWholesale = inventory.wholesalePrices.filter(
-        (wp) => wp.unit === itemUnit || (!wp.unit && !itemUnit),
-      );
-      if (matchingWholesale.length > 0) {
-        const sorted = [...matchingWholesale].sort((a, b) => b.quantity - a.quantity);
-        const tier = sorted.find((wp) => requestedQty >= wp.quantity);
-        if (tier) unitPrice = tier.price;
-      }
-    }
+    const unitPrice = inventory.sellingPrice * factor;
     const subtotal = requestedQty * unitPrice;
     totalAmount += subtotal;
 
@@ -648,13 +666,37 @@ export const getAllEcommerceOrders = asyncErrorHandler(async (req, res, next) =>
       .limit(limitNum)
       .populate("customerId", "name phone")
       .populate("products.inventoryId", "productName productCode SKU images")
-      .populate("fulfillmentOrderId", "orderNumber orderStatus"),
+      .populate({
+        path: "fulfillmentOrderId",
+        select: "orderNumber orderStatus ordersProducts",
+      }),
     EcommerceOrder.countDocuments(filter),
   ]);
 
+  const enrichedOrders = orders.map((o) => {
+    const orderObj = o.toObject ? o.toObject() : o;
+    if (orderObj.fulfillmentOrderId && typeof orderObj.fulfillmentOrderId === "object" && orderObj.fulfillmentOrderId.ordersProducts) {
+      const fopMap = new Map();
+      for (const fop of orderObj.fulfillmentOrderId.ordersProducts) {
+        const invId = (fop.inventoryId?._id || fop.inventoryId)?.toString();
+        if (invId && Array.isArray(fop.batches) && fop.batches.length > 0) {
+          fopMap.set(invId, fop.batches);
+        }
+      }
+
+      for (const p of orderObj.products) {
+        const invId = (p.inventoryId?._id || p.inventoryId)?.toString();
+        if ((!p.batches || p.batches.length === 0) && fopMap.has(invId)) {
+          p.batches = fopMap.get(invId);
+        }
+      }
+    }
+    return orderObj;
+  });
+
   res.status(200).json({
     success: true,
-    data: orders,
+    data: enrichedOrders,
     pagination: {
       currentPage: pageNum,
       totalPages: Math.ceil(total / limitNum) || 1,
@@ -674,15 +716,37 @@ export const getEcommerceOrderById = asyncErrorHandler(async (req, res, next) =>
   const order = await EcommerceOrder.findById(id)
     .populate("customerId", "name phone address township")
     .populate("products.inventoryId", "productName productCode SKU images")
-    .populate("fulfillmentOrderId", "orderNumber orderStatus");
+    .populate({
+      path: "fulfillmentOrderId",
+      select: "orderNumber orderStatus ordersProducts",
+    });
 
   if (!order || order.isDeleted) {
     return next(new CustomError(404, "Order not found"));
   }
 
+  const orderObj = order.toObject ? order.toObject() : order;
+
+  if (orderObj.fulfillmentOrderId && typeof orderObj.fulfillmentOrderId === "object" && orderObj.fulfillmentOrderId.ordersProducts) {
+    const fopMap = new Map();
+    for (const fop of orderObj.fulfillmentOrderId.ordersProducts) {
+      const invId = (fop.inventoryId?._id || fop.inventoryId)?.toString();
+      if (invId && Array.isArray(fop.batches) && fop.batches.length > 0) {
+        fopMap.set(invId, fop.batches);
+      }
+    }
+
+    for (const p of orderObj.products) {
+      const invId = (p.inventoryId?._id || p.inventoryId)?.toString();
+      if ((!p.batches || p.batches.length === 0) && fopMap.has(invId)) {
+        p.batches = fopMap.get(invId);
+      }
+    }
+  }
+
   res.status(200).json({
     success: true,
-    data: order,
+    data: orderObj,
   });
 });
 
@@ -725,6 +789,56 @@ export const updateEcommerceOrderStatus = asyncErrorHandler(async (req, res, nex
       );
     }
 
+    // ကိုယ်တိုင် ပြောင်းခွင့်ရှိသော status များ
+    // pending → confirmed = "ဂိုဒေါင်သို့ လွှဲမည်" သာ၊ confirmed → shipped = fulfillment complete သာ
+    if (previousStatus !== status) {
+      const allowed = MANUAL_STATUS_TRANSITIONS[previousStatus] || [];
+      if (!allowed.includes(status)) {
+        const reason =
+          status === "confirmed"
+            ? "\"ဂိုဒေါင်သို့ လွှဲမည်\" ဖြင့်သာ confirmed ဖြစ်နိုင်ပါသည်"
+            : status === "shipped"
+              ? "ဂိုဒေါင် fulfillment ပြီးမှသာ shipped ဖြစ်နိုင်ပါသည်"
+              : status === "cancelled"
+                ? "ပို့ပြီးသား order ကို cancel မရပါ"
+                : `"${previousStatus}" မှ "${status}" သို့ ပြောင်း၍ မရပါ`;
+        throw new CustomError(400, reason);
+      }
+    }
+
+    // ဂိုဒေါင်သို့ လွှဲပြီးသား order ကို cancel လုပ်လျှင် fulfillment order ကိုပါ cancel လုပ်ပြီး
+    // scan ပြီးသား batch stock ကို ပြန်ထည့်သည် (fulfillment ပြီးသွားလျှင် ငြင်း)
+    if (previousStatus !== "cancelled" && status === "cancelled" && order.fulfillmentOrderId) {
+      const fulfillmentOrder = await Order.findById(order.fulfillmentOrderId).session(session);
+      if (fulfillmentOrder && !fulfillmentOrder.isDeleted) {
+        if (fulfillmentOrder.orderStatus === "completed") {
+          throw new CustomError(
+            400,
+            `ဂိုဒေါင် fulfillment (${fulfillmentOrder.orderNumber}) ပြီးသွားပြီဖြစ်၍ cancel မရပါ`
+          );
+        }
+        if (fulfillmentOrder.orderStatus !== "cancelled") {
+          for (const op of fulfillmentOrder.ordersProducts) {
+            for (const b of op.batches || []) {
+              const qty = Number(b.quantity) || 0;
+              if (qty <= 0 || !b.batchStockId) continue;
+              const batch = await BatchStock.findById(b.batchStockId).session(session);
+              if (!batch) continue;
+              batch.quantity += qty;
+              if (batch.quantity > 0 && batch.status === "depleted") batch.status = "active";
+              await batch.save({ session });
+            }
+          }
+          fulfillmentOrder.orderStatus = "cancelled";
+          const cancelNote = `[Cancelled from ecommerce ${order.orderNumber}]`;
+          fulfillmentOrder.note = fulfillmentOrder.note
+            ? `${fulfillmentOrder.note} | ${cancelNote}`
+            : cancelNote;
+          await fulfillmentOrder.save({ session });
+        }
+      }
+    }
+
     // Restore stock to StorefrontInventory when transitioning from non-cancelled to cancelled
     if (previousStatus !== "cancelled" && status === "cancelled") {
       for (const item of order.products) {
@@ -749,6 +863,18 @@ export const updateEcommerceOrderStatus = asyncErrorHandler(async (req, res, nex
 
     order.status = status;
     await order.save({ session });
+
+    if (previousStatus !== "cancelled" && status === "cancelled") {
+      await createAndSendCustomerNotification({
+        customerId: order.customerId,
+        orderId: order._id,
+        orderNumber: order.orderNumber,
+        title: `အော်ဒါ #${order.orderNumber} ကို ပယ်ဖျက်လိုက်ပါသည်`,
+        message: `အော်ဒါ #${order.orderNumber} ကို ဆိုင်မှ ပယ်ဖျက်လိုက်ပါသည်။`,
+        type: "order_status",
+        session,
+      });
+    }
 
     await session.commitTransaction();
   } catch (err) {
@@ -830,71 +956,106 @@ export const sendOrderToFulfillment = asyncErrorHandler(async (req, res, next) =
     return next(new CustomError(404, "Ecommerce storefront location not found"));
   }
 
+  if (ecommerceOrder.status !== "pending") {
+    return next(
+      new CustomError(400, `"${ecommerceOrder.status}" ဖြစ်နေသော order ကို ဂိုဒေါင်သို့ လွှဲ၍ မရပါ (pending သာ)`)
+    );
+  }
+
   const customer = ecommerceOrder.customerId;
   const customerName =
     customer?.name || ecommerceOrder.shippingAddress?.label || "Ecommerce Customer";
   const customerPhone = customer?.phone || null;
 
-  // Generate order number for fulfillment Order
-  const orderNumber = await Order.generateOrderNumber();
+  let fulfillmentOrder = null;
+  let sentOrder = null;
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      // Atomic claim — request ၂ ခု တစ်ပြိုင်နက်ရောက်လျှင် တစ်ခုသာ အောင်မြင်ပြီး fulfillment order ၂ ခု မဖြစ်စေရန်
+      const claimed = await EcommerceOrder.findOneAndUpdate(
+        { _id: id, isDeleted: false, status: "pending", isSentToFulfillment: { $ne: true } },
+        { $set: { isSentToFulfillment: true, sentToFulfillmentAt: new Date() } },
+        { new: true, session }
+      );
+      if (!claimed) {
+        throw new CustomError(409, "ဤ order ကို ဂိုဒေါင်သို့ လွှဲပြီးသား ဖြစ်ပါသည်");
+      }
 
-  // Prepare products for Order
-  const ordersProducts = ecommerceOrder.products.map((p) => ({
-    inventoryId: p.inventoryId,
-    quantity: p.quantity,
-    unit: p.unit || null,
-    factor: p.factor || 1,
-    baseQuantity: p.baseQuantity || p.quantity * (p.factor || 1),
-    unitPrice: p.unitPrice,
-    batches: [],
-  }));
+      // Generate order number for fulfillment Order
+      const orderNumber = await Order.generateOrderNumber();
 
-  const noteParts = [
-    `[Ecommerce: ${ecommerceOrder.orderNumber}]`,
-    ecommerceOrder.shippingAddress?.addressLine,
-    ecommerceOrder.shippingAddress?.city,
-    ecommerceOrder.note ? `Note: ${ecommerceOrder.note}` : null,
-  ].filter(Boolean);
+      // Prepare products for Order
+      const ordersProducts = claimed.products.map((p) => ({
+        inventoryId: p.inventoryId,
+        quantity: p.quantity,
+        unit: p.unit || null,
+        factor: p.factor || 1,
+        baseQuantity: p.baseQuantity || p.quantity * (p.factor || 1),
+        unitPrice: p.unitPrice,
+        batches: [],
+      }));
 
-  const paymentType = ecommerceOrder.paymentStatus === "paid" ? "paid" : "credit";
+      const noteParts = [
+        `[Ecommerce: ${claimed.orderNumber}]`,
+        claimed.shippingAddress?.addressLine,
+        claimed.shippingAddress?.city,
+        claimed.note ? `Note: ${claimed.note}` : null,
+      ].filter(Boolean);
 
-  // Create Order in pending status for warehouse fulfillment queue
-  // (Note: StorefrontInventory was already deducted upon ecommerce checkout, so we don't deduct again!)
-  const fulfillmentOrder = await Order.create({
-    orderNumber,
-    saleType: "storefront",
-    storefrontId,
-    customerName,
-    customerPhone,
-    creditPersonId: customer?.isCreditPerson ? customer._id : null,
-    ordersProducts,
-    subTotal: ecommerceOrder.totalAmount,
-    tax: 0,
-    discount: 0,
-    finalAmount: ecommerceOrder.totalAmount,
-    paidAmount: ecommerceOrder.paymentStatus === "paid" ? ecommerceOrder.totalAmount : 0,
-    paymentType,
-    paymentMethod: ecommerceOrder.paymentMethod || "cash",
-    orderStatus: "pending",
-    soldBy: req.user._id,
-    note: noteParts.join(" | "),
-    ecommerceOrderId: ecommerceOrder._id,
-    orderDate: new Date(),
-  });
+      const paymentType = claimed.paymentStatus === "paid" ? "paid" : "credit";
 
-  // Update EcommerceOrder status and fulfillment linkage
-  ecommerceOrder.status = "confirmed";
-  ecommerceOrder.isSentToFulfillment = true;
-  ecommerceOrder.fulfillmentOrderId = fulfillmentOrder._id;
-  ecommerceOrder.sentToFulfillmentAt = new Date();
-  await ecommerceOrder.save();
+      // Create Order in pending status for warehouse fulfillment queue
+      // (Note: StorefrontInventory was already deducted upon ecommerce checkout, so we don't deduct again!)
+      [fulfillmentOrder] = await Order.create(
+        [
+          {
+            orderNumber,
+            saleType: "storefront",
+            storefrontId,
+            customerName,
+            customerPhone,
+            creditPersonId: customer?.isCreditPerson ? customer._id : null,
+            ordersProducts,
+            subTotal: claimed.totalAmount,
+            tax: 0,
+            discount: 0,
+            finalAmount: claimed.totalAmount,
+            paidAmount: claimed.paymentStatus === "paid" ? claimed.totalAmount : 0,
+            paymentType,
+            paymentMethod: claimed.paymentMethod || "cash",
+            orderStatus: "pending",
+            soldBy: req.user._id,
+            note: noteParts.join(" | "),
+            ecommerceOrderId: claimed._id,
+            orderDate: new Date(),
+          },
+        ],
+        { session }
+      );
+
+      // Update EcommerceOrder status and fulfillment linkage
+      claimed.status = "confirmed";
+      claimed.fulfillmentOrderId = fulfillmentOrder._id;
+      await claimed.save({ session });
+      sentOrder = claimed;
+    });
+  } catch (error) {
+    if (error instanceof CustomError) return next(error);
+    console.error("Send to fulfillment error:", error);
+    return next(new CustomError(500, `Failed to send order to fulfillment: ${error.message}`));
+  } finally {
+    await session.endSession();
+  }
+
+  const ecommerceOrderResult = sentOrder;
 
   logActivity({
     admin: req.user?._id,
     action: "create",
     feature: "ecommerce_order",
-    description: `Sent ecommerce order ${ecommerceOrder.orderNumber} to warehouse fulfillment as ${fulfillmentOrder.orderNumber}`,
-    targetId: ecommerceOrder._id,
+    description: `Sent ecommerce order ${ecommerceOrderResult.orderNumber} to warehouse fulfillment as ${fulfillmentOrder.orderNumber}`,
+    targetId: ecommerceOrderResult._id,
     targetModel: "EcommerceOrder",
     ip: req.ip,
   });
@@ -903,30 +1064,19 @@ export const sendOrderToFulfillment = asyncErrorHandler(async (req, res, next) =
     success: true,
     message: "Order successfully sent to warehouse fulfillment",
     data: {
-      ecommerceOrder,
+      ecommerceOrder: ecommerceOrderResult,
       fulfillmentOrder,
     },
   });
 });
 
-const getUnitFactor = (inventory, unit) => {
-  if (!unit || !inventory.uomConversions?.length) return 1;
-  const conv = inventory.uomConversions.find(
-    c => c.unit?.toLowerCase() === unit.toLowerCase()
-  );
-  return conv ? conv.factor : 1;
-};
+// convertFrom chain ပါ တွက်သော factor (ဥပမာ ဖာ → ပုံး → ဘူး)
+const getUnitFactor = (inventory, unit) =>
+  getEffectiveFactor(inventory.uomConversions, inventory.unitOfMeasure, unit);
 
-const applyWholesalePrice = (inventory, quantity, unit = null) => {
-  if (!inventory.wholesalePrices?.length) return inventory.sellingPrice;
-  const matchingWholesale = inventory.wholesalePrices.filter(
-    (wp) => wp.unit === unit || (!wp.unit && !unit),
-  );
-  if (matchingWholesale.length === 0) return inventory.sellingPrice;
-  const sorted = [...matchingWholesale].sort((a, b) => b.quantity - a.quantity);
-  const tier = sorted.find((wp) => quantity >= wp.quantity);
-  return tier ? tier.price : inventory.sellingPrice;
-};
+// Ecommerce တွင် wholesale စျေးမသုံးတော့ဘဲ unit အလိုက်စျေး (sellingPrice × factor) သာ သုံးသည်
+const getEcommerceUnitPrice = (inventory, unit) =>
+  inventory.sellingPrice * getUnitFactor(inventory, unit);
 
 const recalculateTotal = (products) => {
   return products.reduce((sum, p) => sum + p.subtotal, 0);
@@ -971,6 +1121,9 @@ export const updateEcommerceOrderProducts = asyncErrorHandler(async (req, res, n
   const storefrontId = new mongoose.Types.ObjectId(ecommerceStorefrontId);
 
   const session = await mongoose.startSession();
+  // Commit ပြီးမှ response / activity log ပို့ရန် (retry ဖြစ်လျှင် နောက်ဆုံး run ၏ တန်ဖိုး ကျန်)
+  let responseBody = null;
+  let activityLog = null;
 
   try {
     await session.withTransaction(async () => {
@@ -1074,7 +1227,29 @@ export const updateEcommerceOrderProducts = asyncErrorHandler(async (req, res, n
             throw new CustomError(404, `Product not available in ecommerce store: ${invId}`);
           }
 
-          const itemUnit = item.unit || inventory.unitOfMeasure || null;
+          const existingLine = order.products.find((p) => p.inventoryId.toString() === invId);
+          const normalizeUnit = (u) => (u || "").trim().toLowerCase();
+
+          // unit မပါလျှင် ရှိပြီးသား line ၏ unit (မရှိလျှင် base unit) ကို သုံးသည်
+          const itemUnit = item.unit || existingLine?.unit || inventory.unitOfMeasure || null;
+
+          const validUnits = [
+            inventory.unitOfMeasure,
+            ...(inventory.uomConversions || []).map((c) => c.unit),
+          ].map(normalizeUnit);
+          if (itemUnit && !validUnits.includes(normalizeUnit(itemUnit))) {
+            throw new CustomError(400, `"${inventory.productName}" တွင် unit "${itemUnit}" မရှိပါ`);
+          }
+
+          // Line ကို unit အလိုက် ခွဲထားလျှင် remove/fulfillment sync (inventoryId ဖြင့်ရှာ) ပျက်မည်ဖြစ်၍ unit မတူလျှင် ငြင်းသည်
+          const existingUnit = existingLine ? existingLine.unit || inventory.unitOfMeasure : null;
+          if (existingLine && normalizeUnit(existingUnit) !== normalizeUnit(itemUnit)) {
+            throw new CustomError(
+              400,
+              `"${inventory.productName}" ကို ${existingUnit} ဖြင့် မှာထားပြီးဖြစ်၍ ${existingUnit} ဖြင့်သာ ထည့်ပါ`
+            );
+          }
+
           const factor = getUnitFactor(inventory, itemUnit);
           const baseQty = item.quantity * factor;
 
@@ -1111,14 +1286,14 @@ export const updateEcommerceOrderProducts = asyncErrorHandler(async (req, res, n
           if (existingIndex !== -1) {
             const existing = order.products[existingIndex];
             newQty = existing.quantity + item.quantity;
-            unitPrice = item.unitPrice || applyWholesalePrice(inventory, newQty, existing.unit);
+            unitPrice = item.unitPrice || getEcommerceUnitPrice(inventory, existing.unit);
             existing.quantity = newQty;
             existing.baseQuantity = (existing.baseQuantity || 0) + baseQty;
             existing.unitPrice = unitPrice;
             existing.subtotal = newQty * unitPrice;
           } else {
             newQty = item.quantity;
-            unitPrice = item.unitPrice || applyWholesalePrice(inventory, newQty, itemUnit);
+            unitPrice = item.unitPrice || getEcommerceUnitPrice(inventory, itemUnit);
             order.products.push({
               inventoryId: new mongoose.Types.ObjectId(invId),
               productName: inventory.productName,
@@ -1162,7 +1337,7 @@ export const updateEcommerceOrderProducts = asyncErrorHandler(async (req, res, n
             order.products.splice(existingIndex, 1);
           } else {
             const inventory = inventoryMap[invId];
-            const unitPrice = applyWholesalePrice(inventory, newQty, existing.unit);
+            const unitPrice = getEcommerceUnitPrice(inventory, existing.unit);
             existing.quantity = newQty;
             existing.baseQuantity = newBaseQty;
             existing.unitPrice = unitPrice;
@@ -1186,11 +1361,32 @@ export const updateEcommerceOrderProducts = asyncErrorHandler(async (req, res, n
       }
 
       order.totalAmount = recalculateTotal(order.products);
+      order.isEdited = true;
+      order.editedAt = new Date();
+      order.editedReason = action === "add" ? "admin_add" : "admin_remove";
+
+      const changeMsg = action === "remove"
+        ? "အော်ဒါမှ ပစ္စည်းအချို့အား ဖယ်ထုတ်/လျှော့ချပြီး ပြင်ဆင်ထားပါသည်"
+        : "အော်ဒါတွင် ပစ္စည်းအသစ် ထပ်မံဖြည့်စွက်ပြီး ပြင်ဆင်ထားပါသည်";
+
+      const editNote = `[အသိပေးချက်: ${changeMsg} (စုစုပေါင်း ကျသင့်ငွေ: ${order.totalAmount.toLocaleString()} MMK)]`;
+      order.note = order.note ? `${order.note}\n\n${editNote}` : editNote;
+
       await order.save({ session });
+
+      await createAndSendCustomerNotification({
+        customerId: order.customerId,
+        orderId: order._id,
+        orderNumber: order.orderNumber,
+        title: `အော်ဒါ #${order.orderNumber} အား ပြင်ဆင်ထားပါသည်`,
+        message: `${changeMsg}။ စုစုပေါင်း ကျသင့်ငွေ: ${order.totalAmount.toLocaleString()} MMK`,
+        type: "order_edited",
+        session,
+      });
 
       await order.populate("products.inventoryId", "productName productCode SKU images");
 
-      logActivity({
+      activityLog = {
         admin: req.user._id,
         action: action === "add" ? "add_items" : "remove_items",
         feature: "ecommerce_order",
@@ -1198,14 +1394,17 @@ export const updateEcommerceOrderProducts = asyncErrorHandler(async (req, res, n
         targetId: order._id,
         targetModel: "EcommerceOrder",
         ip: req.ip,
-      });
+      };
 
-      res.status(200).json({
+      responseBody = {
         success: true,
         message: action === "add" ? "Products added successfully" : "Products removed successfully",
         data: order,
-      });
+      };
     });
+
+    if (activityLog) logActivity(activityLog);
+    res.status(200).json(responseBody);
   } catch (error) {
     if (error instanceof CustomError) return next(error);
     if (error.name === "ValidationError") {

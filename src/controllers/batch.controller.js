@@ -7,6 +7,7 @@ import LocationProfile from "../models/locationProfile.model.js";
 import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 import CustomError from "../utils/customError.js";
 import { logActivity } from "../services/activityLog.service.js";
+import { parseUnitBarcode, resolveUnitByFactor } from "../utils/unitBarcode.utils.js";
 
 /**
  * Scan batch barcode (used in POS & Fulfillment)
@@ -20,41 +21,49 @@ export const scanBatchBarcode = asyncErrorHandler(async (req, res, next) => {
     return next(new CustomError(400, "Batch barcode is required"));
   }
 
-  const trimmed = String(batchBarcode).trim();
-  // Support flexible barcode matching (e.g. B00006 vs B000006 or B6)
-  let barcodeFilter = trimmed;
-  const bMatch = trimmed.match(/^B(\d+)$/i);
-  if (bMatch) {
-    const num = parseInt(bMatch[1], 10);
-    barcodeFilter = { $regex: new RegExp(`^B0*${num}$`, "i") };
+  if (locationId && !mongoose.Types.ObjectId.isValid(locationId)) {
+    return next(new CustomError(400, "Invalid location ID format"));
   }
 
-  const query = {
-    batchBarcode: barcodeFilter,
+  const inventoryFields =
+    "productName productCode SKU category buyingPrice sellingPrice unitOfMeasure uomConversions wholesalePrices chemicalNames";
+
+  // Support flexible barcode matching (e.g. B00006 vs B000006 or B6)
+  const toBarcodeFilter = (code) => {
+    const bMatch = code.match(/^B(\d+)$/i);
+    if (bMatch) {
+      const num = parseInt(bMatch[1], 10);
+      return { $regex: new RegExp(`^B0*${num}$`, "i") };
+    }
+    return code;
   };
 
-  if (locationId) {
-    if (!mongoose.Types.ObjectId.isValid(locationId)) {
-      return next(new CustomError(400, "Invalid location ID format"));
-    }
-    query.locationId = new mongoose.Types.ObjectId(locationId);
-  }
+  const findBatch = async (code) => {
+    const barcodeFilter = toBarcodeFilter(code);
+    const query = { batchBarcode: barcodeFilter };
+    if (locationId) query.locationId = new mongoose.Types.ObjectId(locationId);
 
-  let batch = await BatchStock.findOne(query)
-    .populate(
-      "inventoryId",
-      "productName productCode SKU category buyingPrice sellingPrice uom wholesalePrices chemicalNames"
-    )
-    .populate("locationId", "locationName locationCode type");
-
-  // Fallback: If not found at the specific location, check at any location (e.g. warehouse)
-  if (!batch && locationId) {
-    batch = await BatchStock.findOne({ batchBarcode: barcodeFilter })
-      .populate(
-        "inventoryId",
-        "productName productCode SKU category buyingPrice sellingPrice uom wholesalePrices chemicalNames"
-      )
+    let found = await BatchStock.findOne(query)
+      .populate("inventoryId", inventoryFields)
       .populate("locationId", "locationName locationCode type");
+
+    // Fallback: If not found at the specific location, check at any location (e.g. warehouse)
+    if (!found && locationId) {
+      found = await BatchStock.findOne({ batchBarcode: barcodeFilter })
+        .populate("inventoryId", inventoryFields)
+        .populate("locationId", "locationName locationCode type");
+    }
+    return found;
+  };
+
+  // Unit barcode (B000001-10) ဆိုလျှင် base barcode ဖြင့် ရှာ;
+  // batchNumber ကို barcode အဖြစ်သုံးထားသော batch ဟောင်း ("LOT-2024" ကဲ့သို့) အတွက် barcode တစ်ခုလုံးဖြင့်ပါ ထပ်ရှာ
+  const parsed = parseUnitBarcode(batchBarcode);
+  let scanFactor = parsed.factor;
+  let batch = await findBatch(parsed.baseBarcode);
+  if (!batch && parsed.hasSuffix) {
+    batch = await findBatch(String(batchBarcode).trim());
+    if (batch) scanFactor = 1;
   }
 
   if (!batch) {
@@ -63,6 +72,22 @@ export const scanBatchBarcode = asyncErrorHandler(async (req, res, next) => {
         404,
         `Batch with barcode '${batchBarcode}' not found`
       )
+    );
+  }
+
+  // Barcode ၏ factor နှင့် ကိုက်သော unit (product ၏ conversion ပြောင်းထားလျှင် sticker ဟောင်းကို ငြင်း)
+  const { unit: scannedUnit, ambiguous } = resolveUnitByFactor(batch.inventoryId, scanFactor);
+  if (!scannedUnit) {
+    return next(
+      new CustomError(
+        400,
+        `ဤ barcode ၏ unit (×${scanFactor}) ကို product တွင် မတွေ့ပါ — sticker အသစ် ထုတ်ပါ`
+      )
+    );
+  }
+  if (ambiguous) {
+    return next(
+      new CustomError(400, `Factor ${scanFactor} နှင့် ကိုက်သော unit တစ်ခုထက်ပိုရှိ၍ ခွဲခြား၍ မရပါ`)
     );
   }
 
@@ -78,6 +103,10 @@ export const scanBatchBarcode = asyncErrorHandler(async (req, res, next) => {
       ...batch.toObject(),
       isExpired,
       daysUntilExpiry,
+      // scan တစ်ကြိမ် = base unit scanFactor ခု
+      scannedUnit,
+      scanFactor,
+      baseUnit: batch.inventoryId?.unitOfMeasure || null,
     },
   });
 });

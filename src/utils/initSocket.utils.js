@@ -22,8 +22,9 @@ export const initSocket = (httpServer) => {
     socket.on("join-room", (room) => {
       // Validate room name
       const validRooms = ["kitchen", "waiter", "cashier", "manager", "all"];
+      const isCustomerRoom = typeof room === "string" && room.startsWith("customer_");
 
-      if (validRooms.includes(room)) {
+      if (validRooms.includes(room) || isCustomerRoom) {
         socket.join(room);
         logger.info(`Socket ${socket.id} joined room: ${room}`);
 

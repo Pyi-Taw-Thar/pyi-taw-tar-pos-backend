@@ -145,3 +145,32 @@ export function getConversionLabel(conv, baseUnit) {
   }
   return `${conv.unit} (×${conv.factor} ${baseUnit})`;
 }
+
+/**
+ * Fulfillment တွင် scan ရသော base qty အတိုင်း order line ကို ပြန်ညှိရန်
+ * - factor ဖြင့် ပြတ်ပြတ်စား၍ရလျှင် unit/စျေး မပြောင်း (ဥပမာ 10 ဘူး → ပုံး 1)
+ * - မရလျှင် base unit သို့ ပြောင်းပြီး unit စျေးကို factor ဖြင့် စား (ဥပမာ 15 ဘူး → ဘူး 15)
+ *
+ * @param {{ unit: string, factor?: number, unitPrice: number }} line
+ * @param {number} scannedBaseQty - base unit ဖြင့် scan ရသော အရေအတွက်
+ * @param {string} baseUnit - product ၏ base unit (unitOfMeasure)
+ */
+export function rescaleLineToBaseQty(line, scannedBaseQty, baseUnit) {
+  const factor = line.factor || 1;
+  if (scannedBaseQty % factor === 0) {
+    return {
+      unit: line.unit,
+      factor,
+      quantity: scannedBaseQty / factor,
+      unitPrice: line.unitPrice,
+      baseQuantity: scannedBaseQty,
+    };
+  }
+  return {
+    unit: baseUnit || line.unit,
+    factor: 1,
+    quantity: scannedBaseQty,
+    unitPrice: line.unitPrice / factor,
+    baseQuantity: scannedBaseQty,
+  };
+}

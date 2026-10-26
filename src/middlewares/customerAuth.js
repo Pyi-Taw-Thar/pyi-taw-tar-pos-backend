@@ -15,7 +15,20 @@ export const customerProtect = asyncErrorHandler(async (req, res, next) => {
   }
 
   const verifyAsync = util.promisify(jwt.verify);
-  const decodedToken = await verifyAsync(token, process.env.JWT_SECRET);
+  let decodedToken;
+  try {
+    decodedToken = await verifyAsync(token, process.env.JWT_SECRET);
+  } catch (err) {
+    if (err.name === "TokenExpiredError") {
+      return next(
+        new CustomError(401, "Your login session has expired. Please login again.")
+      );
+    }
+    if (err.name === "JsonWebTokenError") {
+      return next(new CustomError(401, "Invalid token. Please login again."));
+    }
+    return next(err);
+  }
 
   const customer = await Customer.findById(decodedToken.id);
   if (!customer) {
