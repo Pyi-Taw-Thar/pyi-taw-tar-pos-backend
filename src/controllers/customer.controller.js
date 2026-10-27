@@ -46,6 +46,14 @@ export const register = asyncErrorHandler(async (req, res, next) => {
   });
 });
 
+// login အမည် နှိုင်းယှဉ်ရန် — space / zero-width space အားလုံးဖယ်, အကြီးအသေး မခွဲ
+// (DB ထဲရှိ အမည်ကို မပြောင်း — နှိုင်းယှဉ်ရာတွင်သာ သုံး)
+const normalizeLoginName = (value = "") =>
+  value
+    .normalize("NFC")
+    .toLowerCase()
+    .replace(/[\s​-‍﻿]+/g, "");
+
 export const login = asyncErrorHandler(async (req, res, next) => {
   const { phone, password, name } = req.body;
 
@@ -73,13 +81,10 @@ export const login = asyncErrorHandler(async (req, res, next) => {
 
   // If name is provided, verify matching against customer name
   if (name && typeof name === "string" && name.trim()) {
-    const inputName = name.trim().toLowerCase().replace(/\s+/g, " ");
-    const currentName = (customer.name || "")
-      .trim()
-      .toLowerCase()
-      .replace(/\s+/g, " ");
+    const inputName = normalizeLoginName(name);
+    const currentName = normalizeLoginName(customer.name || "");
 
-    if (currentName && currentName !== inputName) {
+    if (inputName && currentName && currentName !== inputName) {
       return next(
         new CustomError(
           401,
