@@ -14,6 +14,7 @@ import {
 import { protect } from "../controllers/administrationPolicy.controller.js";
 import { permissionGranted } from "../controllers/administrationPolicy.controller.js";
 import validate from "../middlewares/validate.middleware.js";
+import { authLimiter } from "../middlewares/rateLimiter.middleware.js";
 import {
   adminSignupSchema,
   adminLoginSchema,
@@ -29,7 +30,7 @@ router.post(
   validate(adminSignupSchema),
   signup
 );
-router.post("/admin/login", validate(adminLoginSchema), login);
+router.post("/admin/login", authLimiter, validate(adminLoginSchema), login);
 router.post("/admin/logout", protect, logout);
 router.get(
   "/admin",

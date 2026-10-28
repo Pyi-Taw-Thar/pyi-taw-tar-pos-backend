@@ -21,6 +21,7 @@ import {
 import { customerProtect } from "../middlewares/customerAuth.js";
 import { protect, permissionGranted } from "../controllers/administrationPolicy.controller.js";
 import validate from "../middlewares/validate.middleware.js";
+import { authLimiter } from "../middlewares/rateLimiter.middleware.js";
 import {
   customerRegisterSchema,
   customerLoginSchema,
@@ -31,8 +32,8 @@ const upload = multer({ storage: multer.memoryStorage() });
 const router = express.Router();
 
 // Customer auth & profile
-router.post("/customer/register", validate(customerRegisterSchema), register);
-router.post("/customer/login", validate(customerLoginSchema), login);
+router.post("/customer/register", authLimiter, validate(customerRegisterSchema), register);
+router.post("/customer/login", authLimiter, validate(customerLoginSchema), login);
 router.get("/customer/me", customerProtect, getMe);
 router.patch("/customer/me", customerProtect, validate(updateMeSchema), updateMe);
 

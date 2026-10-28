@@ -9,7 +9,7 @@ import helmet from "helmet";
 import { mmTimeZoneMiddleware } from "./configs/timezoneConvertor.config.js";
 
 // User Define Module
-import apiRateLimiter from "./middlewares/rateLimiter.middleware.js";
+import { apiLimiter } from "./middlewares/rateLimiter.middleware.js";
 import configureCors from "./configs/cors.config.js";
 import globalErrorHandler from "./controllers/error.controller.js";
 import CustomError from "./utils/customError.js";
@@ -52,7 +52,7 @@ app.use(
 app.use(configureCors());
 
 app.set("trust proxy", 1);
-app.use(apiRateLimiter(60, 60 * 1000)); //60 requests per minute
+app.use(apiLimiter); // Role အလိုက် သို့မဟုတ် IP အလိုက် rate limit ကန့်သတ်ချက်
 
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json({ limit: "1mb" }));
