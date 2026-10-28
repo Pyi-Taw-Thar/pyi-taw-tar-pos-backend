@@ -515,58 +515,83 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
     });
   }
 
-  // Execute stock deduction and order creation inside an ACID transaction session
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
+  // ACID transaction (withTransaction) နှင့် orderNumber duplicate (E11000) retry ၃ ကြိမ်ဖြင့် အော်ဒါဖန်တီးခြင်း
+  const MAX_ORDER_ATTEMPTS = 3;
   let order;
-  try {
-    // 1. Atomically verify and deduct stock with concurrency check
-    for (const update of stockUpdates) {
-      const updatedStock = await StorefrontInventory.findOneAndUpdate(
-        {
-          _id: update.stockRecordId,
-          quantity: { $gte: update.deductQty },
-        },
-        {
-          $inc: { quantity: -update.deductQty },
-          $set: { lastUpdated: new Date() },
-        },
-        { session, new: true }
-      );
+  let txRuns = 0;
 
-      if (!updatedStock) {
-        throw new CustomError(
-          400,
-          "Failed to deduct stock due to concurrent checkout or insufficient balance. Please try again."
+  for (let attempt = 1; attempt <= MAX_ORDER_ATTEMPTS; attempt++) {
+    const session = await mongoose.startSession();
+    try {
+      // WriteConflict (TransientTransactionError) နှင့် UnknownTransactionCommitResult တို့ကို driver က အလိုအလျောက် ပြန်ကြိုးစားပေးသည်
+      await session.withTransaction(async () => {
+        txRuns++;
+        // 1. Atomically verify and deduct stock with concurrency check
+        for (const update of stockUpdates) {
+          const updatedStock = await StorefrontInventory.findOneAndUpdate(
+            {
+              _id: update.stockRecordId,
+              quantity: { $gte: update.deductQty },
+            },
+            {
+              $inc: { quantity: -update.deductQty },
+              $set: { lastUpdated: new Date() },
+            },
+            { session, new: true }
+          );
+
+          if (!updatedStock) {
+            throw new CustomError(
+              400,
+              "Failed to deduct stock due to concurrent checkout or insufficient balance. Please try again."
+            );
+          }
+        }
+
+        // 2. Create ecommerce order inside session
+        const [newOrder] = await EcommerceOrder.create(
+          [
+            {
+              customerId,
+              products: validatedProducts,
+              shippingAddress: shippingAddress || {},
+              totalAmount,
+              paymentMethod: paymentMethod || "cash_on_delivery",
+              note: note || null,
+            },
+          ],
+          { session }
+        );
+
+        order = newOrder;
+      });
+
+      if (attempt > 1 || txRuns > 1) {
+        console.warn(
+          `[createOrder] Order succeeded after retry (attempt=${attempt}, txRuns=${txRuns})`
         );
       }
+      break; // အောင်မြင်ပါက retry loop မှ ထွက်မည်
+    } catch (err) {
+      // orderNumber တူ၍ duplicate key (E11000) ဖြစ်မှသာ နံပါတ်အသစ်ဖြင့် ပြန်ကြိုးစားမည်
+      if (err?.code === 11000 && err?.keyPattern?.orderNumber) {
+        console.warn(
+          `[createOrder] Duplicate orderNumber E11000 retry (attempt=${attempt}/${MAX_ORDER_ATTEMPTS})`
+        );
+        if (attempt < MAX_ORDER_ATTEMPTS) {
+          continue;
+        }
+        return next(
+          new CustomError(
+            409,
+            "အော်ဒါများ တစ်ပြိုင်နက် ဝင်နေပါသည်။ ခဏနေ ပြန်ကြိုးစားပါ။"
+          )
+        );
+      }
+      throw err;
+    } finally {
+      await session.endSession();
     }
-
-    // 2. Create ecommerce order inside session
-    const [newOrder] = await EcommerceOrder.create(
-      [
-        {
-          customerId,
-          products: validatedProducts,
-          shippingAddress: shippingAddress || {},
-          totalAmount,
-          paymentMethod: paymentMethod || "cash_on_delivery",
-          note: note || null,
-        },
-      ],
-      { session }
-    );
-
-    order = newOrder;
-
-    // 3. Commit transaction
-    await session.commitTransaction();
-  } catch (err) {
-    await session.abortTransaction();
-    throw err;
-  } finally {
-    session.endSession();
   }
 
   await order.populate("products.inventoryId", "productName productCode SKU images");

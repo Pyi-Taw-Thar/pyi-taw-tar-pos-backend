@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import Counter from "./counter.model.js";
 
 const productSchema = new mongoose.Schema({
   inventoryId: {
@@ -140,25 +141,62 @@ const ecommerceOrderSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 ecommerceOrderSchema.pre("save", async function () {
-  if (this.isNew) {
+  if (this.isNew && !this.orderNumber) {
     const now = new Date();
     const year = now.getFullYear();
     const month = String(now.getMonth() + 1).padStart(2, "0");
     const day = String(now.getDate()).padStart(2, "0");
     const prefix = `ECO-${year}-${month}-${day}-`;
+    const counterId = prefix.slice(0, -1);
 
-    const lastOrder = await mongoose.model("EcommerceOrder").findOne({
-      orderNumber: new RegExp(`^${prefix}`),
-    }).sort({ orderNumber: -1 }).select("orderNumber");
+    // ယနေ့အတွက် counter document မရှိသေးပါက ရှိပြီးသား အမြင့်ဆုံး orderNumber ကို ဖတ်၍ $max ဖြင့် စတင်သတ်မှတ်မည် (session မပါ)
+    const existingCounter = await Counter.findById(counterId).session(null).lean();
+    if (!existingCounter) {
+      const lastOrder = await mongoose
+        .model("EcommerceOrder")
+        .findOne({ orderNumber: new RegExp(`^${prefix}`) })
+        .sort({ orderNumber: -1 })
+        .select("orderNumber")
+        .session(null)
+        .lean();
 
-    let seq = 1;
-    if (lastOrder?.orderNumber) {
-      const parts = lastOrder.orderNumber.split("-");
-      if (parts.length === 5) {
-        seq = parseInt(parts[4], 10) + 1;
+      let lastSeq = 0;
+      if (lastOrder?.orderNumber) {
+        const parts = lastOrder.orderNumber.split("-");
+        if (parts.length === 5) {
+          const parsed = parseInt(parts[4], 10);
+          if (!Number.isNaN(parsed)) {
+            lastSeq = parsed;
+          }
+        }
+      }
+
+      try {
+        await Counter.updateOne(
+          { _id: counterId },
+          { $max: { seq: lastSeq } },
+          { upsert: true }
+        );
+      } catch (err) {
+        // တစ်ပြိုင်နက်တည်း upsert လုပ်မိ၍ E11000 ဖြစ်ပါက ရှိပြီးသား document ကို $max ဖြင့်သာ update လုပ်မည်
+        if (err?.code === 11000) {
+          await Counter.updateOne(
+            { _id: counterId },
+            { $max: { seq: lastSeq } }
+          );
+        } else {
+          throw err;
+        }
       }
     }
-    this.orderNumber = `${prefix}${String(seq).padStart(6, "0")}`;
+
+    // Transaction အပြင်ဘက်တွင် (session မပါဘဲ) atomic $inc ဖြင့် နံပါတ်အသစ် ရယူမည်
+    const counter = await Counter.findOneAndUpdate(
+      { _id: counterId },
+      { $inc: { seq: 1 } },
+      { upsert: true, new: true }
+    );
+    this.orderNumber = `${prefix}${String(counter.seq).padStart(6, "0")}`;
   }
 });
 
