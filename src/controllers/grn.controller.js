@@ -7,6 +7,7 @@ import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 import CustomError from "../utils/customError.js";
 import { createDateFilter } from "../utils/dateFilter.utils.js";
 import { logActivity } from "../services/activityLog.service.js";
+import { generateBatchNumber } from "../utils/batchNumber.utils.js";
 
 // Create new GRN (Supports Partial GRN - Can receive one or more items from PO)
 export const createGRN = asyncErrorHandler(async (req, res, next) => {
@@ -97,6 +98,9 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
   // Track cumulative received quantity per inventoryId for duplicate products
   const receivedByProduct = new Map();
   let generatedBarcodeCount = 0;
+  // GRN တစ်ခုတည်းအတွင်း ပစ္စည်းတူ + expiry တူပါက batch number တစ်ခုတည်း မျှသုံးရန် cache နှင့် count
+  const autoBatchMap = new Map();
+  let autoBatchCount = 0;
 
   // Process each line item (supports duplicate productCode, optionally by unit)
   for (const [idx, userItem] of lineItems.entries()) {
@@ -323,9 +327,26 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
     // You pay for what you receive (good + bad), not just good quantity
     const totalPrice = receivedQuantity * unitPrice;
 
+    // Check if we need to auto-generate batchNumber
+    let itemBatchNumber = userItem.batchNumber ? String(userItem.batchNumber).trim() : null;
+    if (!itemBatchNumber) {
+      // Expiry date တူ/မတူ စစ်ဆေးရန် key တည်ဆောက်ခြင်း (ဗလာဖြစ်လျှင် "no-expiry")
+      const expKey = userItem.expiryDate
+        ? new Date(userItem.expiryDate).toISOString().split("T")[0]
+        : "no-expiry";
+      const groupKey = `${inventoryIdValue.toString()}_${expKey}`;
+
+      if (autoBatchMap.has(groupKey)) {
+        itemBatchNumber = autoBatchMap.get(groupKey);
+      } else {
+        itemBatchNumber = await generateBatchNumber();
+        autoBatchMap.set(groupKey, itemBatchNumber);
+        autoBatchCount++;
+      }
+    }
+
     // Check if we need to auto-generate batchBarcode
     let itemBatchBarcode = userItem.batchBarcode ? String(userItem.batchBarcode).trim() : null;
-    const itemBatchNumber = userItem.batchNumber ? String(userItem.batchNumber).trim() : null;
 
     if (itemBatchNumber && !itemBatchBarcode) {
       // Check if another line item in this same GRN batch already generated a barcode for same inventoryId + batchNumber
@@ -482,6 +503,7 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
     success: true,
     message: "GRN created successfully",
     data: newGRN,
+    autoBatchCount,
   });
 });
 
