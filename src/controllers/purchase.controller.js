@@ -78,13 +78,31 @@ export const createPurchase = asyncErrorHandler(async (req, res, next) => {
     })
   );
 
+  // ပစ္စည်းတူ + unit တူ လိုင်းများကို ပေါင်းစည်းခြင်း (API တိုက်ရိုက်ခေါ်လျှင် duplicate မဖြစ်စေရန်)
+  const mergedProductsMap = new Map();
+  for (const item of productsWithDetails) {
+    const unitKey = (item.unit || "").trim().toLowerCase();
+    const mergeKey = `${item.inventoryId.toString()}__${unitKey}`;
+
+    if (mergedProductsMap.has(mergeKey)) {
+      const existing = mergedProductsMap.get(mergeKey);
+      existing.purchaseQuantity += item.purchaseQuantity;
+      if (existing.baseQuantity != null && item.baseQuantity != null) {
+        existing.baseQuantity += item.baseQuantity;
+      }
+    } else {
+      mergedProductsMap.set(mergeKey, { ...item });
+    }
+  }
+  const mergedProducts = Array.from(mergedProductsMap.values());
+
   // Generate PO number
   const poNumber = await Purchasing.generatePONumber();
 
   const purchase = await Purchasing.create({
     poNumber,
     supplierId,
-    products: productsWithDetails,
+    products: mergedProducts,
     note: note || "No note available",
     totalAmount,
     status: "pending",

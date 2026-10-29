@@ -134,15 +134,32 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
 
     // Match the specific PO product entry
     let poProduct;
-    if (poProducts.length === 1) {
+    if (userItem.poProductId) {
+      // poProductId ပါလျှင် PO product နှင့် တိုက်ရိုက်တွဲခြင်း
+      poProduct = purchaseOrder.products.id
+        ? purchaseOrder.products.id(userItem.poProductId)
+        : purchaseOrder.products.find(p => String(p._id) === String(userItem.poProductId));
+
+      if (
+        !poProduct ||
+        String(poProduct.productCode || '').toUpperCase() !== productCodeUpper
+      ) {
+        return next(
+          new CustomError(
+            400,
+            `Product with poProductId '${userItem.poProductId}' and productCode '${userItem.productCode}' not found in purchase order.`
+          )
+        );
+      }
+    } else if (poProducts.length === 1) {
       poProduct = poProducts[0];
     } else if (userItem.unit) {
-      // Unit provided — match by unit name
+      // Unit provided — match by unit name (fallback: ဤ GRN တွင် ယူပြီးသား နုတ်ပြီး ကျန် remaining ရှိသော လိုင်းကို ဦးစားပေးရွေး)
       const unitStr = String(userItem.unit).trim().toLowerCase();
-      poProduct = poProducts.find(
+      const matchingUnits = poProducts.filter(
         p => String(p.unit || '').trim().toLowerCase() === unitStr
       );
-      if (!poProduct) {
+      if (matchingUnits.length === 0) {
         return next(
           new CustomError(
             400,
@@ -150,15 +167,32 @@ export const createGRN = asyncErrorHandler(async (req, res, next) => {
           )
         );
       }
+      poProduct = matchingUnits.find(p => {
+        const entryBaseQty = p.baseQuantity || p.purchaseQuantity || 0;
+        const alreadyReceivedInGRN = receivedByProduct.get(String(p._id)) || 0;
+        const remaining = entryBaseQty - (p.receivedQuantity || 0) - alreadyReceivedInGRN;
+        return remaining >= calcReceivedQuantity;
+      }) || matchingUnits[0];
     } else {
-      // No unit provided — try exact baseQuantity match first
+      // No unit provided — try exact baseQuantity match first (ဤ GRN တွင် ယူပြီးသား နုတ်)
       poProduct = poProducts.find(p => {
         const entryBaseQty = p.baseQuantity || p.purchaseQuantity || 0;
-        const remaining = entryBaseQty - (p.receivedQuantity || 0);
+        const alreadyReceivedInGRN = receivedByProduct.get(String(p._id)) || 0;
+        const remaining = entryBaseQty - (p.receivedQuantity || 0) - alreadyReceivedInGRN;
         return entryBaseQty === calcReceivedQuantity && remaining >= calcReceivedQuantity;
       });
       if (!poProduct) {
-        // Fallback: base unit entry (purchaseQuantity === baseQuantity)
+        // Fallback: remaining ကျန်ရှိသေးသော base unit entry
+        poProduct = poProducts.find(p => {
+          const isBase = (p.baseQuantity != null ? p.baseQuantity : p.purchaseQuantity) === p.purchaseQuantity;
+          const entryBaseQty = p.baseQuantity || p.purchaseQuantity || 0;
+          const alreadyReceivedInGRN = receivedByProduct.get(String(p._id)) || 0;
+          const remaining = entryBaseQty - (p.receivedQuantity || 0) - alreadyReceivedInGRN;
+          return isBase && remaining >= calcReceivedQuantity;
+        });
+      }
+      if (!poProduct) {
+        // Fallback: general base unit entry
         poProduct = poProducts.find(
           p => (p.baseQuantity != null ? p.baseQuantity : p.purchaseQuantity) === p.purchaseQuantity
         );
