@@ -57,6 +57,16 @@ const orderProductsSchema = new mongoose.Schema({
         required: true,
         min: 0,
       },
+      locationName: {
+        type: String,
+        trim: true,
+        default: null,
+      },
+      locationType: {
+        type: String,
+        trim: true,
+        default: null,
+      },
     },
   ],
 });

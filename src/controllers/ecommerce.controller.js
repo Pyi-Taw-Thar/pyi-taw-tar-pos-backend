@@ -13,6 +13,7 @@ import { getEffectiveFactor } from "../utils/uom.utils.js";
 import { logActivity } from "../services/activityLog.service.js";
 import { getTierMultiplier } from "../services/customerTier.service.js";
 import { createAndSendCustomerNotification } from "../services/customerNotification.service.js";
+import { adjustBatchLocationStock } from "../utils/batchLocationStock.utils.js";
 
 const ecommerceStorefrontId = process.env.ECOMMERCE_STOREFRONT_ID;
 
@@ -852,6 +853,24 @@ export const updateEcommerceOrderStatus = asyncErrorHandler(async (req, res, nex
               batch.quantity += qty;
               if (batch.quantity > 0 && batch.status === "depleted") batch.status = "active";
               await batch.save({ session });
+
+              // Batch ၏ location သည် order ၏ storefront (E) မဟုတ်ပါက ထို location ၏ စုစုပေါင်း stock ကိုပါ ပြန်ထည့်မည် (Plan §7)
+              const orderStorefrontIdStr = storefrontObjId.toString();
+              const batchLocationIdStr = (batch.locationId?._id || batch.locationId)?.toString();
+
+              if (batchLocationIdStr !== orderStorefrontIdStr) {
+                await adjustBatchLocationStock({
+                  inventoryId: op.inventoryId._id || op.inventoryId,
+                  locationType: batch.locationType,
+                  locationId: batch.locationId,
+                  delta: -qty, // negative delta = add back
+                  adminId: req.user?._id || null,
+                  orderNumber: order.orderNumber,
+                  batchNumber: batch.batchNumber,
+                  orderId: order._id,
+                  session,
+                });
+              }
             }
           }
           fulfillmentOrder.orderStatus = "cancelled";

@@ -10,6 +10,7 @@ import { logActivity } from "../services/activityLog.service.js";
 import { createAndSendCustomerNotification } from "../services/customerNotification.service.js";
 import { rescaleLineToBaseQty } from "../utils/uom.utils.js";
 import { createStockAuditLog } from "../services/stockAuditLog.service.js";
+import { adjustBatchLocationStock } from "../utils/batchLocationStock.utils.js";
 
 /**
  * Synchronize batch stock deltas between existing batches and incoming batches.
@@ -18,7 +19,7 @@ import { createStockAuditLog } from "../services/stockAuditLog.service.js";
  * @param {Object} session - Mongoose client session
  * @param {Boolean} isFinal - If true, requires every product's total scanned quantity to equal requiredQty
  */
-async function syncBatchStockDeltas(order, fulfilledProducts, session, isFinal = false) {
+async function syncBatchStockDeltas(order, fulfilledProducts, session, isFinal = false, adminId = null) {
   for (const orderProduct of order.ordersProducts) {
     const invIdStr = (
       typeof orderProduct.inventoryId === "object" && orderProduct.inventoryId?._id
@@ -70,28 +71,76 @@ async function syncBatchStockDeltas(order, fulfilledProducts, session, isFinal =
     const incomingQtyMap = new Map();
 
     for (const b of incomingBatches) {
-      let batchQuery = {};
+      let batchStock = null;
       if (b.batchStockId && mongoose.Types.ObjectId.isValid(b.batchStockId)) {
-        batchQuery._id = b.batchStockId;
-      } else if (b.batchBarcode) {
-        batchQuery.batchBarcode = b.batchBarcode.trim();
-      } else if (b.batchNumber) {
-        batchQuery.inventoryId = orderProduct.inventoryId;
-        batchQuery.batchNumber = b.batchNumber.trim();
+        batchStock = await BatchStock.findById(b.batchStockId)
+          .populate("locationId", "locationName name type")
+          .session(session);
       } else {
-        throw new CustomError(400, "Batch must include batchBarcode or batchStockId");
-      }
+        const baseQuery = {};
+        if (b.batchBarcode) {
+          baseQuery.batchBarcode = b.batchBarcode.trim();
+        } else if (b.batchNumber) {
+          baseQuery.inventoryId = orderProduct.inventoryId;
+          baseQuery.batchNumber = b.batchNumber.trim();
+        } else {
+          throw new CustomError(400, "Batch must include batchBarcode or batchStockId");
+        }
 
-      if (order.storefrontId) {
-        batchQuery.locationId = order.storefrontId;
-      }
+        // ၁) Main Storefront (M) ဦးစားပေး ရှာဖွေခြင်း (env: FULFILLMENT_STOREFRONT_ID)
+        const fulfillmentStorefrontId = process.env.FULFILLMENT_STOREFRONT_ID;
+        if (fulfillmentStorefrontId && mongoose.Types.ObjectId.isValid(fulfillmentStorefrontId)) {
+          batchStock = await BatchStock.findOne({
+            ...baseQuery,
+            locationId: new mongoose.Types.ObjectId(fulfillmentStorefrontId),
+            quantity: { $gt: 0 },
+          })
+            .populate("locationId", "locationName name type")
+            .session(session);
+        }
 
-      let batchStock = await BatchStock.findOne(batchQuery).session(session);
+        // ၂) Order ၏ storefront (E) တွင် ရှာဖွေခြင်း
+        if (!batchStock && order.storefrontId) {
+          const orderStorefrontId = order.storefrontId._id || order.storefrontId;
+          batchStock = await BatchStock.findOne({
+            ...baseQuery,
+            locationId: orderStorefrontId,
+            quantity: { $gt: 0 },
+          })
+            .populate("locationId", "locationName name type")
+            .session(session);
+        }
 
-      if (!batchStock && b.batchBarcode) {
-        batchStock = await BatchStock.findOne({
-          batchBarcode: b.batchBarcode.trim(),
-        }).session(session);
+        // ၃) ကျန် location အားလုံးမှ quantity > 0 ရှိသော batch များကို ရှာဖွေခြင်း
+        if (!batchStock) {
+          const otherBatches = await BatchStock.find({
+            ...baseQuery,
+            quantity: { $gt: 0 },
+          })
+            .populate("locationId", "locationName name type")
+            .session(session);
+
+          if (otherBatches.length === 1) {
+            batchStock = otherBatches[0];
+          } else if (otherBatches.length > 1) {
+            const locNames = otherBatches.map(
+              (ob) => ob.locationId?.locationName || ob.locationId?.name || ob.locationId?.toString()
+            );
+            throw new CustomError(
+              400,
+              `Batch [${b.batchBarcode || b.batchNumber}] ကို [${locNames.join(", ")}] တွင် တွေ့ — ဘယ်နေရာမှ ထုတ်မလဲ ရွေး၍မရ၍ main storefront သို့ transfer လုပ်ပါ`
+            );
+          }
+        }
+
+        // ၄) Fallback: မတွေ့ပါက quantity သတ်မှတ်ချက်မပါဘဲ ရှာဖွေခြင်း
+        if (!batchStock && b.batchBarcode) {
+          batchStock = await BatchStock.findOne({
+            batchBarcode: b.batchBarcode.trim(),
+          })
+            .populate("locationId", "locationName name type")
+            .session(session);
+        }
       }
 
       if (!batchStock) {
@@ -105,12 +154,18 @@ async function syncBatchStockDeltas(order, fulfilledProducts, session, isFinal =
       const qty = Number(b.quantity) || 0;
       incomingQtyMap.set(bsIdStr, (incomingQtyMap.get(bsIdStr) || 0) + qty);
 
+      const locDoc = batchStock.locationId;
+      const locName = locDoc?.locationName || locDoc?.name || null;
+
       updatedBatches.push({
         batchStockId: batchStock._id,
         batchNumber: batchStock.batchNumber,
         batchBarcode: batchStock.batchBarcode,
         expiryDate: batchStock.expiryDate,
         quantity: qty,
+        locationId: batchStock.locationId?._id || batchStock.locationId,
+        locationType: batchStock.locationType,
+        locationName: locName,
       });
     }
 
@@ -148,6 +203,25 @@ async function syncBatchStockDeltas(order, fulfilledProducts, session, isFinal =
       }
 
       await batchStock.save({ session });
+
+      // Location စုစုပေါင်း Stock လျှော့/တိုးခြင်း (Plan §7)
+      // Batch ၏ location သည် order ၏ storefront (E) မဟုတ်ပါက ထို location ၏ စုစုပေါင်း stock ကိုပါ လျှော့/တိုးမည်
+      const orderStorefrontIdStr = (order.storefrontId?._id || order.storefrontId)?.toString();
+      const batchLocationIdStr = (batchStock.locationId?._id || batchStock.locationId)?.toString();
+
+      if (batchLocationIdStr !== orderStorefrontIdStr) {
+        await adjustBatchLocationStock({
+          inventoryId: orderProduct.inventoryId,
+          locationType: batchStock.locationType,
+          locationId: batchStock.locationId,
+          delta,
+          adminId,
+          orderNumber: order.orderNumber,
+          batchNumber: batchStock.batchNumber,
+          orderId: order._id,
+          session,
+        });
+      }
     }
 
     // Update orderProduct.batches to new state (only non-zero batches)
@@ -261,7 +335,7 @@ export const savePartialFulfillment = asyncErrorHandler(async (req, res, next) =
       }
 
       // Sync deltas (isFinal = false)
-      await syncBatchStockDeltas(order, fulfilledProducts, session, false);
+      await syncBatchStockDeltas(order, fulfilledProducts, session, false, req.user?._id);
 
       order.orderStatus = "partially_fulfilled";
       await order.save({ session });
@@ -362,7 +436,7 @@ export const fulfillOrder = asyncErrorHandler(async (req, res, next) => {
 
       if (autoAdjust) {
         // Sync batch deltas without requiring 100% matched
-        await syncBatchStockDeltas(order, fulfilledProducts, session, false);
+        await syncBatchStockDeltas(order, fulfilledProducts, session, false, req.user?._id);
 
         // Adjust order products: keep only products with scanned batches
         const adjustedProducts = [];
@@ -525,7 +599,7 @@ export const fulfillOrder = asyncErrorHandler(async (req, res, next) => {
         }
       } else {
         // Normal 100% full completion
-        await syncBatchStockDeltas(order, fulfilledProducts, session, true);
+        await syncBatchStockDeltas(order, fulfilledProducts, session, true, req.user?._id);
 
         order.orderStatus = "completed";
         await order.save({ session });
