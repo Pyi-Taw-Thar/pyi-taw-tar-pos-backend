@@ -12,6 +12,7 @@ import {
   updateCreditPersonBlacklist,
   getCreditPersonCustomers,
   importCustomersFromExcel,
+  getCustomerAnalyticsById,
 } from "../controllers/customer.controller.js";
 import {
   getMyNotifications,
@@ -45,6 +46,7 @@ router.patch("/customer/notifications/:id/read", customerProtect, markNotificati
 router.get("/customer", protect, permissionGranted("owner", "admin"), getAllCustomers);
 router.get("/customer/townships", protect, permissionGranted("owner", "admin"), getAllTownships);
 router.patch("/customer/:id", protect, permissionGranted("owner", "admin"), updateCustomerByAdmin);
+router.get("/customer/:id/analytics", protect, permissionGranted("owner", "admin"), getCustomerAnalyticsById);
 
 // Credit person management (for POS / dashboard admin)
 router.patch(

@@ -39,6 +39,8 @@ const productSchema = new mongoose.Schema({
     type: Number,
     default: null,
   },
+  // Fulfillment auto-adjust တွင် unit ပြောင်းသွားနိုင်၍ customer မှာခဲ့သော မူလ unit ကို သိမ်းထားရန်
+  originalUnit: { type: String, default: null },
   batches: [
     {
       batchStockId: {

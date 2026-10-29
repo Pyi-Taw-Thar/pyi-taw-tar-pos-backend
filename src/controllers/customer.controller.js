@@ -1,3 +1,4 @@
+import EcommerceOrder from "../models/ecommerceOrder.model.js";
 import Customer from "../models/customer.model.js";
 import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 import CustomError from "../utils/customError.js";
@@ -443,6 +444,143 @@ export const importCustomersFromExcel = asyncErrorHandler(async (req, res, next)
       created,
       skipped,
       errors: errors.length > 0 ? errors : undefined,
+    },
+  });
+});
+
+// ဝယ်ယူသူတစ်ဦးချင်းစီ၏ အသေးစိတ်နှင့် မှာယူမှုမှတ်တမ်း (Customer Detail with Order History & Analytics)
+export const getCustomerAnalyticsById = asyncErrorHandler(async (req, res, next) => {
+  const { id } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return next(new CustomError(400, "Invalid customer ID format"));
+  }
+
+  const customer = await Customer.findById(id).select("-password");
+  if (!customer) {
+    return next(new CustomError(404, "Customer not found"));
+  }
+
+  const customerObjId = new mongoose.Types.ObjectId(id);
+
+  // 1. Customer Orders Metrics
+  const metricsAgg = await EcommerceOrder.aggregate([
+    {
+      $match: {
+        customerId: customerObjId,
+        isDeleted: false,
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        totalOrders: { $sum: 1 },
+        totalSpent: {
+          $sum: {
+            $cond: [{ $ne: ["$status", "cancelled"] }, "$totalAmount", 0],
+          },
+        },
+        deliveredCount: {
+          $sum: { $cond: [{ $eq: ["$status", "delivered"] }, 1, 0] },
+        },
+        cancelledCount: {
+          $sum: { $cond: [{ $eq: ["$status", "cancelled"] }, 1, 0] },
+        },
+        pendingCount: {
+          $sum: { $cond: [{ $eq: ["$status", "pending"] }, 1, 0] },
+        },
+        shippedCount: {
+          $sum: { $cond: [{ $eq: ["$status", "shipped"] }, 1, 0] },
+        },
+      },
+    },
+  ]);
+
+  const metrics = metricsAgg[0] || {
+    totalOrders: 0,
+    totalSpent: 0,
+    deliveredCount: 0,
+    cancelledCount: 0,
+    pendingCount: 0,
+    shippedCount: 0,
+  };
+
+  const validOrdersCount = metrics.totalOrders - metrics.cancelledCount;
+  const avgOrderValue = validOrdersCount > 0
+    ? Math.round(metrics.totalSpent / validOrdersCount)
+    : 0;
+
+  // 2. All Orders by this customer
+  const orders = await EcommerceOrder.find({
+    customerId: customerObjId,
+    isDeleted: false,
+  })
+    .sort({ createdAt: -1 })
+    .populate("products.inventoryId", "productName productCode images")
+    .select("orderNumber totalAmount status paymentMethod paymentStatus createdAt products note isEdited");
+
+  // 3. Top Purchased Products by this customer
+  const topProductsAgg = await EcommerceOrder.aggregate([
+    {
+      $match: {
+        customerId: customerObjId,
+        isDeleted: false,
+        status: { $ne: "cancelled" },
+      },
+    },
+    { $unwind: "$products" },
+    {
+      $group: {
+        _id: "$products.inventoryId",
+        productName: { $first: "$products.productName" },
+        productCode: { $first: "$products.productCode" },
+        unit: { $first: "$products.unit" },
+        totalQuantity: { $sum: "$products.quantity" },
+        totalSpent: { $sum: "$products.subtotal" },
+        orderCount: { $sum: 1 },
+        lastPurchasedAt: { $max: "$createdAt" },
+      },
+    },
+    { $sort: { totalSpent: -1 } },
+    { $limit: 15 },
+    {
+      $lookup: {
+        from: "inventories",
+        localField: "_id",
+        foreignField: "_id",
+        as: "inventoryInfo",
+      },
+    },
+    {
+      $project: {
+        _id: 1,
+        productName: 1,
+        productCode: 1,
+        unit: 1,
+        totalQuantity: 1,
+        totalSpent: 1,
+        orderCount: 1,
+        lastPurchasedAt: 1,
+        image: { $arrayElemAt: ["$inventoryInfo.images.url", 0] },
+      },
+    },
+  ]);
+
+  res.status(200).json({
+    success: true,
+    data: {
+      customer,
+      metrics: {
+        ...metrics,
+        deliveredOrders: metrics.deliveredCount || 0,
+        cancelledOrders: metrics.cancelledCount || 0,
+        pendingOrders: metrics.pendingCount || 0,
+        shippedOrders: metrics.shippedCount || 0,
+        validOrdersCount,
+        avgOrderValue,
+      },
+      orders,
+      topProducts: topProductsAgg,
     },
   });
 });

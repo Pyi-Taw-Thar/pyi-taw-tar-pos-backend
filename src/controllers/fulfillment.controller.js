@@ -536,6 +536,8 @@ export const fulfillOrder = asyncErrorHandler(async (req, res, next) => {
                 const originalUnit = ep.unit;
                 const originalBaseQty = ep.baseQuantity || ep.quantity * (ep.factor || 1);
                 ep.originalQuantity = ep.originalQuantity || originalQty;
+                // မူလ quantity နှင့်အတူ မူလ unit ကိုပါ သိမ်း (မသိမ်းလျှင် history တွင် ပြောင်းပြီး base unit ဖြင့်သာ ပြမည်)
+                ep.originalUnit = ep.originalUnit || originalUnit || null;
                 // Fulfillment line နှင့် unit/စျေး တူညီစေရန် (ပုံး → ဘူး ပြောင်းနိုင်)
                 ep.unit = matchedOp.unit;
                 ep.factor = matchedOp.factor;

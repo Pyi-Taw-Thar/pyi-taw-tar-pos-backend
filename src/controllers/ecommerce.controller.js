@@ -14,6 +14,7 @@ import { logActivity } from "../services/activityLog.service.js";
 import { getTierMultiplier } from "../services/customerTier.service.js";
 import { createAndSendCustomerNotification } from "../services/customerNotification.service.js";
 import { adjustBatchLocationStock } from "../utils/batchLocationStock.utils.js";
+import { createDateFilter } from "../utils/dateFilter.utils.js";
 
 const ecommerceStorefrontId = process.env.ECOMMERCE_STOREFRONT_ID;
 
@@ -665,14 +666,13 @@ export const getAllEcommerceOrders = asyncErrorHandler(async (req, res, next) =>
   const filter = { isDeleted: false };
   if (status) filter.status = status;
 
-  if (startDate || endDate) {
-    filter.createdAt = {};
-    if (startDate) filter.createdAt.$gte = new Date(startDate);
-    if (endDate) {
-      const end = new Date(endDate);
-      end.setHours(23, 59, 59, 999);
-      filter.createdAt.$lte = end;
-    }
+  // မြန်မာစံတော်ချိန် (Asia/Yangon) အခြေခံသည့် dateFilter utility ဖြင့် filter လုပ်ခြင်း
+  try {
+    const dateFilter = createDateFilter(req.query, "createdAt", false);
+    Object.assign(filter, dateFilter);
+  } catch (error) {
+    if (error instanceof CustomError) return next(error);
+    return next(new CustomError(400, error.message || "Invalid date filter"));
   }
 
   if (search) {
@@ -1620,6 +1620,209 @@ export const getPurchaseUsage = asyncErrorHandler(async (req, res, next) => {
       remaining: Math.max(0, effectiveLimit - alreadyOrdered),
       lastResetAt: latestReset?.resetAt || null,
       lastResetBy: latestReset?.resetBy || null,
+    },
+  });
+});
+
+
+// Ecommerce အရောင်းအစီရင်ခံစာ (Ecommerce Sales Report) Endpoint
+export const getEcommerceReport = asyncErrorHandler(async (req, res, next) => {
+  const { status, limit = 10 } = req.query;
+  const filter = { isDeleted: false };
+
+  if (status && status !== "all") {
+    filter.status = status;
+  }
+
+  // Timezone-aware date filter
+  try {
+    const dateFilter = createDateFilter(req.query, "createdAt", false);
+    Object.assign(filter, dateFilter);
+  } catch (error) {
+    if (error instanceof CustomError) return next(error);
+    return next(new CustomError(400, error.message || "Invalid date filter"));
+  }
+
+  // 1. Overall Summary
+  const summaryAgg = await EcommerceOrder.aggregate([
+    { $match: filter },
+    {
+      $group: {
+        _id: null,
+        totalOrders: { $sum: 1 },
+        totalRevenue: {
+          $sum: {
+            $cond: [{ $ne: ["$status", "cancelled"] }, "$totalAmount", 0],
+          },
+        },
+        deliveredRevenue: {
+          $sum: {
+            $cond: [{ $eq: ["$status", "delivered"] }, "$totalAmount", 0],
+          },
+        },
+        pendingCount: {
+          $sum: { $cond: [{ $eq: ["$status", "pending"] }, 1, 0] },
+        },
+        confirmedCount: {
+          $sum: { $cond: [{ $eq: ["$status", "confirmed"] }, 1, 0] },
+        },
+        shippedCount: {
+          $sum: { $cond: [{ $eq: ["$status", "shipped"] }, 1, 0] },
+        },
+        deliveredCount: {
+          $sum: { $cond: [{ $eq: ["$status", "delivered"] }, 1, 0] },
+        },
+        cancelledCount: {
+          $sum: { $cond: [{ $eq: ["$status", "cancelled"] }, 1, 0] },
+        },
+      },
+    },
+  ]);
+
+  const summaryData = summaryAgg[0] || {
+    totalOrders: 0,
+    totalRevenue: 0,
+    deliveredRevenue: 0,
+    pendingCount: 0,
+    confirmedCount: 0,
+    shippedCount: 0,
+    deliveredCount: 0,
+    cancelledCount: 0,
+  };
+
+  const validOrdersCount = summaryData.totalOrders - summaryData.cancelledCount;
+  const avgOrderValue = validOrdersCount > 0 ? Math.round(summaryData.totalRevenue / validOrdersCount) : 0;
+
+  // 2. Daily Sales Trend (Asia/Yangon +06:30 timezone grouping)
+  const dailySalesAgg = await EcommerceOrder.aggregate([
+    {
+      $match: {
+        ...filter,
+        status: { $ne: "cancelled" },
+      },
+    },
+    {
+      $project: {
+        totalAmount: 1,
+        dateStr: {
+          $dateToString: {
+            format: "%Y-%m-%d",
+            date: "$createdAt",
+            timezone: "+06:30",
+          },
+        },
+      },
+    },
+    {
+      $group: {
+        _id: "$dateStr",
+        revenue: { $sum: "$totalAmount" },
+        orders: { $sum: 1 },
+      },
+    },
+    { $sort: { _id: 1 } },
+  ]);
+
+  const dailySales = dailySalesAgg.map((item) => ({
+    date: item._id,
+    revenue: item.revenue || 0,
+    totalSales: item.revenue || 0,
+    orders: item.orders || 0,
+    orderCount: item.orders || 0,
+  }));
+
+  // 3. Top Selling Products (Non-cancelled orders)
+  const topProductsAgg = await EcommerceOrder.aggregate([
+    {
+      $match: {
+        ...filter,
+        status: { $ne: "cancelled" },
+      },
+    },
+    { $unwind: "$products" },
+    {
+      $group: {
+        _id: "$products.inventoryId",
+        productName: { $first: "$products.productName" },
+        productCode: { $first: "$products.productCode" },
+        unit: { $first: "$products.unit" },
+        totalQuantity: { $sum: "$products.quantity" },
+        totalRevenue: { $sum: "$products.subtotal" },
+        orderCount: { $sum: 1 },
+      },
+    },
+    { $sort: { totalRevenue: -1 } },
+    { $limit: parseInt(limit) || 10 },
+    {
+      $lookup: {
+        from: "inventories",
+        localField: "_id",
+        foreignField: "_id",
+        as: "inventoryInfo",
+      },
+    },
+    {
+      $project: {
+        _id: 1,
+        productName: 1,
+        productCode: 1,
+        unit: 1,
+        totalQuantity: 1,
+        totalRevenue: 1,
+        orderCount: 1,
+        image: { $arrayElemAt: ["$inventoryInfo.images.url", 0] },
+      },
+    },
+  ]);
+
+  // 4. Payment Methods Breakdown
+  const paymentMethodAgg = await EcommerceOrder.aggregate([
+    {
+      $match: {
+        ...filter,
+        status: { $ne: "cancelled" },
+      },
+    },
+    {
+      $group: {
+        _id: "$paymentMethod",
+        count: { $sum: 1 },
+        totalAmount: { $sum: "$totalAmount" },
+      },
+    },
+    { $sort: { totalAmount: -1 } },
+  ]);
+
+  const paymentMethods = paymentMethodAgg.map((pm) => ({
+    method: pm._id || "cash_on_delivery",
+    count: pm.count,
+    totalAmount: pm.totalAmount,
+  }));
+
+  // 5. Recent Orders in the period (Limit 15)
+  const recentOrders = await EcommerceOrder.find(filter)
+    .sort({ createdAt: -1 })
+    .limit(15)
+    .populate("customerId", "name phone")
+    .select("orderNumber customerId totalAmount status paymentMethod paymentStatus createdAt");
+
+  res.status(200).json({
+    success: true,
+    data: {
+      summary: {
+        ...summaryData,
+        deliveredOrders: summaryData.deliveredCount || 0,
+        cancelledOrders: summaryData.cancelledCount || 0,
+        pendingOrders: summaryData.pendingCount || 0,
+        confirmedOrders: summaryData.confirmedCount || 0,
+        shippedOrders: summaryData.shippedCount || 0,
+        validOrdersCount,
+        avgOrderValue,
+      },
+      dailySales,
+      topProducts: topProductsAgg,
+      paymentMethods,
+      recentOrders,
     },
   });
 });
