@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import Purchasing from "../models/purchasing.model.js";
+import SupplierCreditPayment from "../models/supplierCreditPayment.model.js";
 import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 import CustomError from "../utils/customError.js";
 import Inventory from "../models/inventory.model.js";
@@ -8,7 +9,16 @@ import { createDateFilter } from "../utils/dateFilter.utils.js";
 import { getEffectiveFactor } from "../utils/uom.utils.js";
 
 export const createPurchase = asyncErrorHandler(async (req, res, next) => {
-  const { supplierId, products, note, totalAmount } = req.body;
+  const {
+    supplierId,
+    products,
+    note,
+    totalAmount,
+    paymentType = "credit",
+    initialPaidAmount,
+    paymentMethod = "cash",
+    paymentNotes,
+  } = req.body;
   const purchasedBy = req.user._id;
 
   if (!supplierId || !products || products.length === 0) {
@@ -21,7 +31,7 @@ export const createPurchase = asyncErrorHandler(async (req, res, next) => {
       if (!item.inventoryId || !item.purchaseQuantity) {
         throw new CustomError(
           400,
-          `Product must have inventoryId and purchaseQuantity`
+          "Product must have inventoryId and purchaseQuantity"
         );
       }
 
@@ -44,7 +54,7 @@ export const createPurchase = asyncErrorHandler(async (req, res, next) => {
           baseQuantity = item.purchaseQuantity;
         } else {
           const conversion = inventoryItem.uomConversions?.find(
-            (c) => c.unit?.toLowerCase() === String(unit).toLowerCase(),
+            (c) => c.unit?.toLowerCase() === String(unit).toLowerCase()
           );
           if (!conversion) {
             const validUnits = [
@@ -53,14 +63,16 @@ export const createPurchase = asyncErrorHandler(async (req, res, next) => {
             ].filter(Boolean);
             throw new CustomError(
               400,
-              `Invalid unit '${unit}' for product '${inventoryItem.productCode}'. Valid units: ${validUnits.join(", ")}`,
+              `Invalid unit '${unit}' for product '${inventoryItem.productCode}'. Valid units: ${validUnits.join(", ")}`
             );
           }
-          baseQuantity = item.purchaseQuantity * getEffectiveFactor(
-            inventoryItem.uomConversions,
-            inventoryItem.unitOfMeasure || "piece",
-            conversion.unit
-          );
+          baseQuantity =
+            item.purchaseQuantity *
+            getEffectiveFactor(
+              inventoryItem.uomConversions,
+              inventoryItem.unitOfMeasure || "piece",
+              conversion.unit
+            );
         }
       } else {
         baseQuantity = item.purchaseQuantity;
@@ -96,34 +108,163 @@ export const createPurchase = asyncErrorHandler(async (req, res, next) => {
   }
   const mergedProducts = Array.from(mergedProductsMap.values());
 
+  // Server ဘက်တွင် PO Total တွက်ချက်ခြင်း (Σ inventory.buyingPrice × baseQuantity)
+  const serverTotal = mergedProducts.reduce((sum, item) => {
+    const effectiveQty =
+      item.baseQuantity != null ? item.baseQuantity : item.purchaseQuantity;
+    return sum + item.buyingPrice * effectiveQty;
+  }, 0);
+
+  // Client ၏ totalAmount နှင့် မကိုက်ညီပါက 400 error ပြန်ပေးခြင်း (Plan §5 Q1)
+  if (totalAmount != null && Number(totalAmount) !== Number(serverTotal)) {
+    return next(
+      new CustomError(
+        400,
+        `စုစုပေါင်းငွေ မကိုက်ပါ (server: ${serverTotal}, client: ${totalAmount})`
+      )
+    );
+  }
+
+  // PaymentType စစ်ဆေးခြင်း
+  const validPaymentTypes = ["credit", "paid", "partial"];
+  if (!validPaymentTypes.includes(paymentType)) {
+    return next(
+      new CustomError(
+        400,
+        `Invalid paymentType '${paymentType}'. Valid types: ${validPaymentTypes.join(", ")}`
+      )
+    );
+  }
+
+  let paymentToDeduct = 0;
+  if (paymentType === "paid") {
+    paymentToDeduct = serverTotal;
+  } else if (paymentType === "partial") {
+    const parsedInitial = Number(initialPaidAmount);
+    if (
+      initialPaidAmount == null ||
+      isNaN(parsedInitial) ||
+      parsedInitial <= 0 ||
+      parsedInitial >= serverTotal
+    ) {
+      return next(
+        new CustomError(
+          400,
+          `တစ်စိတ်တစ်ပိုင်း ငွေပေးချေမှု ပမာဏသည် 0 ထက် ကြီးပြီး စုစုပေါင်းငွေ (${serverTotal}) ထက် နည်းရပါမည်`
+        )
+      );
+    }
+    paymentToDeduct = parsedInitial;
+  }
+
+  // PaymentMethod စစ်ဆေးခြင်း (paid / partial တွင်သာ လိုအပ်)
+  const validPaymentMethods = [
+    "cash",
+    "bank_transfer",
+    "cheque",
+    "mobile_payment",
+    "other",
+  ];
+  if (paymentType !== "credit") {
+    if (!paymentMethod || !validPaymentMethods.includes(paymentMethod)) {
+      return next(
+        new CustomError(
+          400,
+          `Invalid paymentMethod '${paymentMethod}'. Valid methods: ${validPaymentMethods.join(", ")}`
+        )
+      );
+    }
+  }
+
   // Generate PO number
   const poNumber = await Purchasing.generatePONumber();
 
-  const purchase = await Purchasing.create({
-    poNumber,
-    supplierId,
-    products: mergedProducts,
-    note: note || "No note available",
-    totalAmount,
-    status: "pending",
-    purchasedBy,
-  });
+  // Transaction တစ်ခုတည်း (session.withTransaction) ထဲတွင် Purchasing နှင့် SupplierCreditPayment ဖန်တီးခြင်း
+  const session = await mongoose.startSession();
+  let createdPurchase = null;
+  let createdPayment = null;
 
+  try {
+    await session.withTransaction(async () => {
+      const [purchase] = await Purchasing.create(
+        [
+          {
+            poNumber,
+            supplierId,
+            products: mergedProducts,
+            note: note || "No note available",
+            totalAmount: serverTotal,
+            paidAmount: paymentToDeduct,
+            status: "pending",
+            purchasedBy,
+          },
+        ],
+        { session }
+      );
+
+      // Paid သို့မဟုတ် Partial ဖြစ်ပါက SupplierCreditPayment record ဖန်တီးခြင်း
+      if (paymentType === "paid" || paymentType === "partial") {
+        const paymentData = {
+          purchaseId: purchase._id,
+          supplierId: purchase.supplierId,
+          paidAmount: paymentToDeduct,
+          paymentDate: new Date(),
+          paymentMethod: paymentMethod || "cash",
+          notes: paymentNotes || "PO ဖွင့်ချိန် ငွေပေးချေမှု",
+          addedBy: purchasedBy,
+        };
+
+        const [paymentRecord] = await SupplierCreditPayment.create(
+          [paymentData],
+          { session }
+        );
+        createdPayment = paymentRecord;
+      }
+
+      createdPurchase = purchase;
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  // Activity Log မှတ်တမ်းတင်ခြင်း (Transaction commit ပြီးမှ)
   logActivity({
     admin: purchasedBy,
     action: "create",
     feature: "purchase",
-    description: `Created PO ${purchase.poNumber} - ${purchase.totalAmount} MMK`,
-    targetId: purchase._id,
+    description: `Created PO ${createdPurchase.poNumber} - ${createdPurchase.totalAmount} MMK`,
+    targetId: createdPurchase._id,
     targetModel: "Purchasing",
-    metadata: { status: purchase.status, totalAmount: purchase.totalAmount },
+    metadata: {
+      status: createdPurchase.status,
+      totalAmount: createdPurchase.totalAmount,
+      paymentType,
+      initialPaidAmount: paymentToDeduct,
+    },
     ip: req.ip,
   });
+
+  if (createdPayment) {
+    logActivity({
+      admin: purchasedBy,
+      action: "create_payment",
+      feature: "supplier_credit",
+      description: `Supplier credit payment ${paymentToDeduct} MMK recorded for PO ${createdPurchase.poNumber}`,
+      targetId: createdPayment._id,
+      targetModel: "SupplierCreditPayment",
+      metadata: {
+        purchaseId: createdPurchase._id,
+        poNumber: createdPurchase.poNumber,
+        paidAmount: paymentToDeduct,
+      },
+      ip: req.ip,
+    });
+  }
 
   res.status(201).json({
     success: true,
     message: "Purchase created successfully",
-    data: purchase,
+    data: createdPurchase,
   });
 });
 
