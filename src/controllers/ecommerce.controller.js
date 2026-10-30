@@ -770,6 +770,23 @@ export const getEcommerceOrderById = asyncErrorHandler(async (req, res, next) =>
     }
   }
 
+  // Calculate customer's current total credit outstanding across all credit orders
+  let customerCreditOutstanding = 0;
+  const customerIdVal = orderObj.customerId?._id || orderObj.customerId;
+  if (customerIdVal && mongoose.Types.ObjectId.isValid(customerIdVal)) {
+    const custOrders = await Order.find({
+      creditPersonId: customerIdVal,
+      paymentType: "credit",
+      isDeleted: false,
+    }).select("finalAmount paidAmount");
+
+    customerCreditOutstanding = custOrders.reduce(
+      (sum, o) => sum + Math.max(0, (o.finalAmount || 0) - (o.paidAmount || 0)),
+      0
+    );
+  }
+  orderObj.customerCreditOutstanding = customerCreditOutstanding;
+
   res.status(200).json({
     success: true,
     data: orderObj,

@@ -13,6 +13,7 @@ import {
   getCreditPersonCustomers,
   importCustomersFromExcel,
   getCustomerAnalyticsById,
+  payCustomerCredit,
 } from "../controllers/customer.controller.js";
 import {
   getMyNotifications,
@@ -47,6 +48,7 @@ router.get("/customer", protect, permissionGranted("owner", "admin"), getAllCust
 router.get("/customer/townships", protect, permissionGranted("owner", "admin"), getAllTownships);
 router.patch("/customer/:id", protect, permissionGranted("owner", "admin"), updateCustomerByAdmin);
 router.get("/customer/:id/analytics", protect, permissionGranted("owner", "admin"), getCustomerAnalyticsById);
+router.post("/customer/:id/pay-credit", protect, permissionGranted("owner", "admin", "cashier"), payCustomerCredit);
 
 // Credit person management (for POS / dashboard admin)
 router.patch(

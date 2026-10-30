@@ -1,3 +1,5 @@
+import Order from "../models/orders.model.js";
+import CreditRecord from "../models/creditRecord.model.js";
 import EcommerceOrder from "../models/ecommerceOrder.model.js";
 import Customer from "../models/customer.model.js";
 import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
@@ -566,6 +568,27 @@ export const getCustomerAnalyticsById = asyncErrorHandler(async (req, res, next)
     },
   ]);
 
+  // 4. Customer Credit Outstanding and Payment Records
+  const creditOrders = await Order.find({
+    creditPersonId: customerObjId,
+    paymentType: "credit",
+    isDeleted: false,
+  }).select("orderNumber finalAmount paidAmount createdAt");
+
+  let creditOutstanding = 0;
+  for (const co of creditOrders) {
+    creditOutstanding += Math.max(0, (co.finalAmount || 0) - (co.paidAmount || 0));
+  }
+
+  const creditPayments = await CreditRecord.find({
+    creditPersonId: customerObjId,
+    isDeleted: false,
+  })
+    .sort({ paymentDate: -1 })
+    .limit(30)
+    .populate("orderId", "orderNumber")
+    .populate("addedBy", "name");
+
   res.status(200).json({
     success: true,
     data: {
@@ -578,9 +601,134 @@ export const getCustomerAnalyticsById = asyncErrorHandler(async (req, res, next)
         shippedOrders: metrics.shippedCount || 0,
         validOrdersCount,
         avgOrderValue,
+        creditOutstanding,
       },
       orders,
       topProducts: topProductsAgg,
+      creditOrders,
+      creditPayments,
+    },
+  });
+});
+
+
+/**
+ * Customer အကြွေးဆပ်ရန် (FIFO စနစ်ဖြင့် မကြေသေးသော အကြွေး order များကို အဟောင်းဆုံးမှစ၍ အလိုအလျောက် ဖြတ်ပေးခြင်း)
+ */
+export const payCustomerCredit = asyncErrorHandler(async (req, res, next) => {
+  const { id } = req.params;
+  const { paidAmount, paymentMethod = "cash", notes } = req.body;
+
+  if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+    return next(new CustomError(400, "Invalid customer ID"));
+  }
+
+  const numericPaidAmount = Number(paidAmount);
+  if (!numericPaidAmount || numericPaidAmount <= 0) {
+    return next(new CustomError(400, "Paid amount must be greater than zero"));
+  }
+
+  const customer = await Customer.findById(id);
+  if (!customer) {
+    return next(new CustomError(404, "Customer not found"));
+  }
+
+  const customerObjId = new mongoose.Types.ObjectId(id);
+
+  // Find all unpaid or partially paid credit orders for this customer (Oldest first - FIFO)
+  const creditOrders = await Order.find({
+    creditPersonId: customerObjId,
+    paymentType: "credit",
+    isDeleted: false,
+  }).sort({ createdAt: 1 });
+
+  const eligibleOrders = creditOrders.filter(
+    (o) => (o.finalAmount || 0) - (o.paidAmount || 0) > 0
+  );
+
+  if (eligibleOrders.length === 0) {
+    return next(new CustomError(400, "Customer has no outstanding credit balance to pay"));
+  }
+
+  const totalOutstandingBefore = eligibleOrders.reduce(
+    (sum, o) => sum + Math.max(0, (o.finalAmount || 0) - (o.paidAmount || 0)),
+    0
+  );
+
+  if (numericPaidAmount > totalOutstandingBefore) {
+    return next(
+      new CustomError(
+        400,
+        `Payment amount (${numericPaidAmount.toLocaleString()} MMK) exceeds total outstanding balance (${totalOutstandingBefore.toLocaleString()} MMK)`
+      )
+    );
+  }
+
+  const session = await mongoose.startSession();
+  const createdRecords = [];
+  let remainingToDistribute = numericPaidAmount;
+
+  try {
+    await session.withTransaction(async () => {
+      for (const order of eligibleOrders) {
+        if (remainingToDistribute <= 0) break;
+
+        const orderRemaining = Math.max(0, (order.finalAmount || 0) - (order.paidAmount || 0));
+        const paymentForThisOrder = Math.min(orderRemaining, remainingToDistribute);
+
+        if (paymentForThisOrder > 0) {
+          order.paidAmount = (order.paidAmount || 0) + paymentForThisOrder;
+          await order.save({ session });
+
+          const [record] = await CreditRecord.create(
+            [
+              {
+                orderId: order._id,
+                creditPersonId: customerObjId,
+                paidAmount: paymentForThisOrder,
+                paymentDate: new Date(),
+                paymentMethod: paymentMethod || "cash",
+                notes: notes
+                  ? `${notes} (towards ${order.orderNumber})`
+                  : `Bulk credit payment towards ${order.orderNumber}`,
+                addedBy: req.user._id,
+              },
+            ],
+            { session }
+          );
+
+          createdRecords.push(record);
+          remainingToDistribute -= paymentForThisOrder;
+        }
+      }
+    });
+  } catch (err) {
+    console.error("Error in payCustomerCredit transaction:", err);
+    return next(new CustomError(500, err.message || "Failed to process credit payment"));
+  } finally {
+    await session.endSession();
+  }
+
+  // Recalculate remaining total outstanding
+  const updatedOrders = await Order.find({
+    creditPersonId: customerObjId,
+    paymentType: "credit",
+    isDeleted: false,
+  });
+  const newTotalOutstanding = updatedOrders.reduce(
+    (sum, o) => sum + Math.max(0, (o.finalAmount || 0) - (o.paidAmount || 0)),
+    0
+  );
+
+  res.status(200).json({
+    success: true,
+    message: "Credit payment processed successfully",
+    data: {
+      paidAmount: numericPaidAmount,
+      previousOutstanding: totalOutstandingBefore,
+      remainingOutstanding: newTotalOutstanding,
+      allocatedOrdersCount: createdRecords.length,
+      records: createdRecords,
     },
   });
 });
