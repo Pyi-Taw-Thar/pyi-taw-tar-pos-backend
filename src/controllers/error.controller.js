@@ -1,12 +1,16 @@
 import CustomError from "../utils/customError.js";
 
 const devErrors = (res, error) => {
-  res.status(error.statusCode).json({
+  const response = {
     success: error.success,
     message: error.message,
     stackTrace: error.stack,
     error: error,
-  });
+  };
+  if (error.details) {
+    response.details = error.details;
+  }
+  res.status(error.statusCode).json(response);
 };
 
 const castErrorHandler = (err) => {
@@ -46,10 +50,14 @@ const prodErrors = (res, error) => {
   const message = error.message || "Something went wrong. Please try again later!!!";
 
   if (error.isOperational) {
-    res.status(statusCode).json({
+    const response = {
       success: success,
       message: message,
-    });
+    };
+    if (error.details) {
+      response.details = error.details;
+    }
+    res.status(statusCode).json(response);
   } else {
     // Log the error for debugging (but don't expose it to the user)
     console.error("Production Error:", {

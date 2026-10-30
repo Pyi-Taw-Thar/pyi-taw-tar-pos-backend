@@ -173,7 +173,7 @@ export const getCategories = asyncErrorHandler(async (req, res, next) => {
 });
 
 export const getProducts = asyncErrorHandler(async (req, res, next) => {
-  const { page, limit, category, subCategory, search, brand, limitedOnly, id } = req.query;
+  const { page, limit, category, subCategory, search, brand, limitedOnly, id, sort } = req.query;
   const hasPagination = page !== undefined;
   const pageNum = parseInt(page) || 1;
   const limitNum = parseInt(limit) || 20;
@@ -252,7 +252,13 @@ export const getProducts = asyncErrorHandler(async (req, res, next) => {
       pipe.push({ $count: "total" });
     } else {
       if (hasPagination) {
-        pipe.push({ $skip: skip }, { $limit: limitNum });
+        // Pagination အတွက် ပစ္စည်းများ အစဉ် တည်ငြိမ်စေရန် productName ဖြင့် sort လုပ်ပြီး _id ဖြင့် tiebreak သည်
+        const sortDirection = sort === "desc" ? -1 : 1;
+        pipe.push(
+          { $sort: { "inventory.productName": sortDirection, _id: 1 } },
+          { $skip: skip },
+          { $limit: limitNum }
+        );
       }
       pipe.push(
         { $addFields: { hasPurchaseLimit: { $ne: ["$inventory.ecommerceMaxPerUser", null] } } },
@@ -300,8 +306,13 @@ export const getProducts = asyncErrorHandler(async (req, res, next) => {
     });
 
   if (hasPagination) {
+    // A-Z / Z-A အစဉ် မှန်ကန်စေရန် အကြီးအသေး မခွဲဘဲ ဂဏန်းစဉ် (B2 < B12) ပါဝင်သော collation သုံးသည်
     const [rawProducts, countResult] = await Promise.all([
-      StorefrontInventory.aggregate(buildPipeline(false)),
+      StorefrontInventory.aggregate(buildPipeline(false)).collation({
+        locale: "en",
+        strength: 1,
+        numericOrdering: true,
+      }),
       StorefrontInventory.aggregate(buildPipeline(true)),
     ]);
 
@@ -345,7 +356,7 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
   };
 
   if (!products || !Array.isArray(products) || products.length === 0) {
-    return next(new CustomError(400, "Order must have at least one product"));
+    return next(new CustomError(400, "အော်ဒါတွင် ပစ္စည်း အနည်းဆုံး ၁ ခု ပါရပါမည်။"));
   }
 
   if (!ecommerceStorefrontId) {
@@ -364,7 +375,8 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
     isDeleted: false,
   });
   if (!storefront) {
-    return next(new CustomError(404, "Ecommerce storefront not found"));
+    console.error(`[createOrder] Ecommerce storefront not found: ${ecommerceStorefrontId}`);
+    return next(new CustomError(404, "အော်ဒါ လက်ခံ၍ မရသေးပါ။ ဆိုင်ကို ဆက်သွယ်ပါ။"));
   }
 
   // Fetch all inventory items and stock records
@@ -454,22 +466,62 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
     const invId = item.inventoryId;
 
     if (!mongoose.Types.ObjectId.isValid(invId)) {
-      return next(new CustomError(400, `Product at index ${i}: Invalid inventory ID`));
+      return next(
+        new CustomError(
+          400,
+          '"ပစ္စည်းတစ်ခု" သည် ယခု ဝယ်ယူ၍ မရတော့ပါ။ ဈေးခြင်းမှ ဖယ်ပြီး ပြန်ကြိုးစားပါ။',
+          {
+            code: "PRODUCT_UNAVAILABLE",
+            inventoryId: typeof invId === "string" ? invId : undefined,
+            productName: "ပစ္စည်းတစ်ခု",
+          }
+        )
+      );
     }
 
     const inventory = inventoryMap[invId];
     if (!inventory) {
-      return next(new CustomError(404, `Product at index ${i}: Inventory not found`));
+      return next(
+        new CustomError(
+          404,
+          '"ပစ္စည်းတစ်ခု" သည် ယခု ဝယ်ယူ၍ မရတော့ပါ။ ဈေးခြင်းမှ ဖယ်ပြီး ပြန်ကြိုးစားပါ။',
+          {
+            code: "PRODUCT_UNAVAILABLE",
+            inventoryId: invId,
+            productName: "ပစ္စည်းတစ်ခု",
+          }
+        )
+      );
     }
 
     const stockRecord = stockMap[invId];
     if (!stockRecord) {
-      return next(new CustomError(404, `Product at index ${i}: Not available in ecommerce store`));
+      return next(
+        new CustomError(
+          404,
+          `"${inventory.productName}" သည် ယခု ဝယ်ယူ၍ မရတော့ပါ။ ဈေးခြင်းမှ ဖယ်ပြီး ပြန်ကြိုးစားပါ။`,
+          {
+            code: "PRODUCT_UNAVAILABLE",
+            inventoryId: invId,
+            productName: inventory.productName,
+          }
+        )
+      );
     }
 
     const requestedQty = item.quantity;
     if (!requestedQty || requestedQty < 1) {
-      return next(new CustomError(400, `Product at index ${i}: Quantity must be at least 1`));
+      return next(
+        new CustomError(
+          400,
+          `"${inventory.productName}" ၏ အရေအတွက် အနည်းဆုံး ၁ ဖြစ်ရပါမည်။`,
+          {
+            code: "INVALID_QUANTITY",
+            inventoryId: invId,
+            productName: inventory.productName,
+          }
+        )
+      );
     }
 
     const itemUnit = item.unit || inventory.unitOfMeasure || null;
@@ -477,7 +529,19 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
     const baseQty = requestedQty * factor;
 
     if (stockRecord.quantity < baseQty) {
-      return next(new CustomError(400, `Product at index ${i}: Insufficient stock (available: ${stockRecord.quantity}, requested: ${baseQty} in base unit "${inventory.unitOfMeasure}")`));
+      const displayQty = Number(requestedQty).toLocaleString();
+      const displayUnit = itemUnit || inventory.unitOfMeasure || "";
+      return next(
+        new CustomError(
+          400,
+          `"${inventory.productName}" ကို ${displayQty} ${displayUnit} မှာထားသော်လည်း လက်ကျန် မလုံလောက်ပါ။ အရေအတွက် လျှော့ပြီး ပြန်ကြိုးစားပါ။`,
+          {
+            code: "OUT_OF_STOCK",
+            inventoryId: invId,
+            productName: inventory.productName,
+          }
+        )
+      );
     }
 
     if (inventory.ecommerceMaxPerUser) {
@@ -487,12 +551,32 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
       const totalBaseQty = alreadyOrdered + baseQty;
       if (totalBaseQty > effectiveLimit) {
         const remaining = Math.max(0, effectiveLimit - alreadyOrdered);
-        const modeLabel = inventory.ecommercePurchaseResetMode === "timeline"
-          ? `per ${inventory.ecommercePurchaseResetDays} days`
-          : "until admin reset";
-        return next(new CustomError(400,
-          `"${inventory.productName}" limit: max ${effectiveLimit} ${modeLabel} (tier: ${req.customer.tier}). You have ${remaining} left.`
-        ));
+        const baseUnit = inventory.unitOfMeasure || "";
+        const limitStr = Number(effectiveLimit).toLocaleString();
+        const remStr = Number(remaining).toLocaleString();
+
+        let modeText = "";
+        if (inventory.ecommercePurchaseResetMode === "timeline") {
+          const days = inventory.ecommercePurchaseResetDays || 30;
+          modeText = `${days} ရက်အတွင်း`;
+        } else {
+          modeText = "ဆိုင်မှ ပြန်ဖွင့်ပေးသည်အထိ";
+        }
+
+        const remainingText =
+          remaining === 0
+            ? "ယခုအကြိမ် ဝယ်ခွင့် ကုန်သွားပါပြီ။"
+            : `နောက်ထပ် ${remStr} ${baseUnit} ဝယ်နိုင်ပါသည်။`;
+
+        const limitMessage = `"${inventory.productName}" ကို တစ်ယောက်လျှင် ${limitStr} ${baseUnit} အထိသာ ဝယ်ခွင့်ရှိပါသည် (${modeText})။ ${remainingText}`;
+
+        return next(
+          new CustomError(400, limitMessage, {
+            code: "LIMIT_EXCEEDED",
+            inventoryId: invId,
+            productName: inventory.productName,
+          })
+        );
       }
     }
 
@@ -515,6 +599,8 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
     stockUpdates.push({
       stockRecordId: stockRecord._id,
       deductQty: baseQty,
+      inventoryId: invId,
+      productName: inventory.productName,
     });
   }
 
@@ -546,7 +632,12 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
           if (!updatedStock) {
             throw new CustomError(
               400,
-              "Failed to deduct stock due to concurrent checkout or insufficient balance. Please try again."
+              `"${update.productName}" ၏ လက်ကျန် ပြောင်းသွားပါသည်။ ခဏနေ ပြန်ကြိုးစားပါ။`,
+              {
+                code: "STOCK_CHANGED",
+                inventoryId: update.inventoryId ? update.inventoryId.toString() : undefined,
+                productName: update.productName,
+              }
             );
           }
         }
