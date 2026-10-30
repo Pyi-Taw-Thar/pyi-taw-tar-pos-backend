@@ -16,6 +16,7 @@ import {
   resetAllPurchaseLimits,
   getPurchaseUsage,
   getEcommerceReport,
+  getEcommerceProductOrdersReport,
 } from "../controllers/ecommerce.controller.js";
 import { customerProtect } from "../middlewares/customerAuth.js";
 import { protect, permissionGranted } from "../controllers/administrationPolicy.controller.js";
@@ -39,6 +40,7 @@ router.get("/ecommerce/orders/:id", customerProtect, getMyOrderById);
 
 router.get("/ecommerce/admin/orders", protect, permissionGranted("owner", "admin"), getAllEcommerceOrders);
 router.get("/ecommerce/admin/reports", protect, permissionGranted("owner", "admin"), getEcommerceReport);
+router.get("/ecommerce/admin/product-orders-report", protect, permissionGranted("owner", "admin"), getEcommerceProductOrdersReport);
 router.get("/ecommerce/admin/orders/:id", protect, permissionGranted("owner", "admin"), getEcommerceOrderById);
 router.patch("/ecommerce/admin/orders/:id/status", protect, permissionGranted("owner", "admin"), updateEcommerceOrderStatus);
 router.patch("/ecommerce/admin/orders/:id/products", protect, permissionGranted("owner", "admin"), updateEcommerceOrderProducts);

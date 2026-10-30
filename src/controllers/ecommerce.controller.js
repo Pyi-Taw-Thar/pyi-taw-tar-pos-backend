@@ -1677,6 +1677,15 @@ export const getEcommerceReport = asyncErrorHandler(async (req, res, next) => {
             $cond: [{ $eq: ["$status", "delivered"] }, "$totalAmount", 0],
           },
         },
+        totalOrderedQuantity: {
+          $sum: {
+            $cond: [
+              { $ne: ["$status", "cancelled"] },
+              { $sum: "$products.quantity" },
+              0,
+            ],
+          },
+        },
         pendingCount: {
           $sum: { $cond: [{ $eq: ["$status", "pending"] }, 1, 0] },
         },
@@ -1700,6 +1709,7 @@ export const getEcommerceReport = asyncErrorHandler(async (req, res, next) => {
     totalOrders: 0,
     totalRevenue: 0,
     deliveredRevenue: 0,
+    totalOrderedQuantity: 0,
     pendingCount: 0,
     confirmedCount: 0,
     shippedCount: 0,
@@ -1828,6 +1838,8 @@ export const getEcommerceReport = asyncErrorHandler(async (req, res, next) => {
     data: {
       summary: {
         ...summaryData,
+        totalOrderedQuantity: summaryData.totalOrderedQuantity || 0,
+        totalItemsQuantity: summaryData.totalOrderedQuantity || 0,
         deliveredOrders: summaryData.deliveredCount || 0,
         cancelledOrders: summaryData.cancelledCount || 0,
         pendingOrders: summaryData.pendingCount || 0,
@@ -1840,6 +1852,172 @@ export const getEcommerceReport = asyncErrorHandler(async (req, res, next) => {
       topProducts: topProductsAgg,
       paymentMethods,
       recentOrders,
+    },
+  });
+});
+
+
+/**
+ * Ecommerce ပစ္စည်းအလိုက် မှာယူမှု အစီရင်ခံစာ (Ecommerce Product Orders Report) Endpoint
+ * ဘယ်ပစ္စည်းက အရေအတွက် ဘယ်လောက် အော်ဒါတင်ထားလဲ ဆိုသည်ကို ရက်စွဲ filter ဖြင့် စစ်ထုတ်ကြည့်ရှုနိုင်ခြင်း
+ */
+export const getEcommerceProductOrdersReport = asyncErrorHandler(async (req, res, next) => {
+  const { status, search, inventoryId } = req.query;
+  const filter = { isDeleted: false };
+
+  // Status filter: default to excluding cancelled orders unless specifically asked
+  if (status && status !== "all") {
+    filter.status = status;
+  } else if (!status || status === "all") {
+    filter.status = { $ne: "cancelled" };
+  }
+
+  // Timezone-aware date filter
+  try {
+    const dateFilter = createDateFilter(req.query, "createdAt", false);
+    Object.assign(filter, dateFilter);
+  } catch (error) {
+    if (error instanceof CustomError) return next(error);
+    return next(new CustomError(400, error.message || "Invalid date filter"));
+  }
+
+  // If inventoryId is provided, return orders that contain this specific inventoryId
+  if (inventoryId && mongoose.Types.ObjectId.isValid(inventoryId)) {
+    const targetInventoryId = new mongoose.Types.ObjectId(inventoryId);
+    filter["products.inventoryId"] = targetInventoryId;
+
+    const matchingOrders = await EcommerceOrder.find(filter)
+      .sort({ createdAt: -1 })
+      .populate("customerId", "name phone address township")
+      .select("orderNumber customerId totalAmount status paymentMethod paymentStatus createdAt products");
+
+    const ordersDetail = matchingOrders.map((ord) => {
+      const productItem = (ord.products || []).find(
+        (p) => (p.inventoryId?._id || p.inventoryId)?.toString() === inventoryId
+      );
+      return {
+        _id: ord._id,
+        orderNumber: ord.orderNumber,
+        customerName: ord.customerId?.name || "Customer",
+        customerPhone: ord.customerId?.phone || "",
+        customerAddress: ord.customerId?.address || "",
+        customerTownship: ord.customerId?.township || "",
+        createdAt: ord.createdAt,
+        status: ord.status,
+        paymentMethod: ord.paymentMethod,
+        quantity: productItem?.quantity || 0,
+        originalQuantity: productItem?.originalQuantity || productItem?.quantity || 0,
+        unit: productItem?.originalUnit || productItem?.unit || "",
+        unitPrice: productItem?.unitPrice || 0,
+        subtotal: productItem?.subtotal || 0,
+        orderTotalAmount: ord.totalAmount,
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        inventoryId,
+        orders: ordersDetail,
+      },
+    });
+  }
+
+  // Aggregation across products
+  const pipeline = [
+    { $match: filter },
+    { $unwind: "$products" },
+  ];
+
+  if (search && search.trim()) {
+    const regex = new RegExp(search.trim(), "i");
+    pipeline.push({
+      $match: {
+        $or: [
+          { "products.productName": regex },
+          { "products.productCode": regex },
+        ],
+      },
+    });
+  }
+
+  pipeline.push(
+    {
+      $group: {
+        _id: "$products.inventoryId",
+        productName: { $first: "$products.productName" },
+        productCode: { $first: "$products.productCode" },
+        unit: { $first: "$products.unit" },
+        originalUnit: { $first: "$products.originalUnit" },
+        totalQuantity: { $sum: "$products.quantity" },
+        totalRevenue: { $sum: "$products.subtotal" },
+        orderCount: { $sum: 1 },
+        pendingQuantity: {
+          $sum: { $cond: [{ $eq: ["$status", "pending"] }, "$products.quantity", 0] },
+        },
+        confirmedQuantity: {
+          $sum: { $cond: [{ $eq: ["$status", "confirmed"] }, "$products.quantity", 0] },
+        },
+        shippedQuantity: {
+          $sum: { $cond: [{ $eq: ["$status", "shipped"] }, "$products.quantity", 0] },
+        },
+        deliveredQuantity: {
+          $sum: { $cond: [{ $eq: ["$status", "delivered"] }, "$products.quantity", 0] },
+        },
+      },
+    },
+    { $sort: { totalQuantity: -1 } },
+    {
+      $lookup: {
+        from: "inventories",
+        localField: "_id",
+        foreignField: "_id",
+        as: "inventoryInfo",
+      },
+    },
+    {
+      $project: {
+        _id: 1,
+        productName: 1,
+        productCode: 1,
+        unit: { $ifNull: ["$originalUnit", "$unit"] },
+        totalQuantity: 1,
+        totalRevenue: 1,
+        orderCount: 1,
+        pendingQuantity: 1,
+        confirmedQuantity: 1,
+        shippedQuantity: 1,
+        deliveredQuantity: 1,
+        averageUnitPrice: {
+          $cond: [{ $gt: ["$totalQuantity", 0] }, { $round: [{ $divide: ["$totalRevenue", "$totalQuantity"] }, 0] }, 0],
+        },
+        image: { $arrayElemAt: ["$inventoryInfo.images.url", 0] },
+        category: { $arrayElemAt: ["$inventoryInfo.category", 0] },
+      },
+    }
+  );
+
+  const productsAgg = await EcommerceOrder.aggregate(pipeline);
+
+  const totals = productsAgg.reduce(
+    (acc, p) => {
+      acc.totalQuantity += p.totalQuantity || 0;
+      acc.totalRevenue += p.totalRevenue || 0;
+      acc.totalOrderHits += p.orderCount || 0;
+      return acc;
+    },
+    { totalQuantity: 0, totalRevenue: 0, totalOrderHits: 0 }
+  );
+
+  res.status(200).json({
+    success: true,
+    data: {
+      totals: {
+        uniqueProductsCount: productsAgg.length,
+        totalQuantity: totals.totalQuantity,
+        totalRevenue: totals.totalRevenue,
+      },
+      products: productsAgg,
     },
   });
 });
