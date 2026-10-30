@@ -323,9 +323,11 @@ export const getCreditPaymentsBySupplierId = asyncErrorHandler(
     const total = await SupplierCreditPayment.countDocuments(query);
 
     // Get all PO totals for this supplier
+    // Cancel ဖြစ်သော PO ကို မပေါင်း — Suppliers list ၏ စုစုပေါင်းနှင့် တူညီစေရန်
     const purchases = await Purchasing.find({
       supplierId,
       isDeleted: false,
+      status: { $ne: "cancelled" },
     }).select("poNumber totalAmount paidAmount");
 
     const totalPOAmount = purchases.reduce(

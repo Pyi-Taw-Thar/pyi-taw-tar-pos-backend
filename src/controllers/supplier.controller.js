@@ -3,6 +3,11 @@ import { asyncErrorHandler } from "../utils/asyncErrorHandler.js";
 import CustomError from "../utils/customError.js";
 import mongoose from "mongoose";
 import { logActivity } from "../services/activityLog.service.js";
+import {
+  getPurchaseSummaryBySupplier,
+  getPurchaseSummaryTotals,
+  EMPTY_PURCHASE_SUMMARY,
+} from "../services/supplierPurchaseSummary.service.js";
 import XLSX from "xlsx";
 import multer from "multer";
 
@@ -144,10 +149,24 @@ export const getAllSupplierProfiles = asyncErrorHandler(
       .limit(limitNum);
     const total = await SupplierProfile.countDocuments(query);
 
+    // Supplier တစ်ဦးချင်း ဝယ်ယူငွေ / ပေးရန်ငွေ နှင့် filter ကိုက်ညီသော supplier အားလုံး၏ စုစုပေါင်း
+    const allMatchingIds = await SupplierProfile.distinct("_id", query);
+    const [summaryBySupplier, summaryTotals] = await Promise.all([
+      getPurchaseSummaryBySupplier(suppliers.map((s) => s._id)),
+      getPurchaseSummaryTotals(allMatchingIds),
+    ]);
+
+    const data = suppliers.map((s) => ({
+      ...s.toJSON(),
+      purchaseSummary:
+        summaryBySupplier.get(String(s._id)) || { ...EMPTY_PURCHASE_SUMMARY },
+    }));
+
     res.status(200).json({
       success: true,
       message: "Supplier profiles retrieved successfully",
-      data: suppliers,
+      data,
+      summary: { supplierCount: total, ...summaryTotals },
       pagination: {
         currentPage: pageNum,
         totalPages: Math.ceil(total / limitNum),

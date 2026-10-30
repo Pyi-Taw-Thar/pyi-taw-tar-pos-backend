@@ -15,6 +15,7 @@ import { getTierMultiplier } from "../services/customerTier.service.js";
 import { createAndSendCustomerNotification } from "../services/customerNotification.service.js";
 import { adjustBatchLocationStock } from "../utils/batchLocationStock.utils.js";
 import { createDateFilter } from "../utils/dateFilter.utils.js";
+import { findEcommerceWholesalePrice } from "../utils/wholesale.utils.js";
 
 const ecommerceStorefrontId = process.env.ECOMMERCE_STOREFRONT_ID;
 
@@ -495,7 +496,7 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
       }
     }
 
-    const unitPrice = inventory.sellingPrice * factor;
+    const unitPrice = getEcommerceUnitPrice(inventory, itemUnit, requestedQty);
     const subtotal = requestedQty * unitPrice;
     totalAmount += subtotal;
 
@@ -1135,9 +1136,17 @@ export const sendOrderToFulfillment = asyncErrorHandler(async (req, res, next) =
 const getUnitFactor = (inventory, unit) =>
   getEffectiveFactor(inventory.uomConversions, inventory.unitOfMeasure, unit);
 
-// Ecommerce တွင် wholesale စျေးမသုံးတော့ဘဲ unit အလိုက်စျေး (sellingPrice × factor) သာ သုံးသည်
-const getEcommerceUnitPrice = (inventory, unit) =>
-  inventory.sellingPrice * getUnitFactor(inventory, unit);
+
+// Ecommerce တွင် unit နှင့် quantity အလိုက် wholesale စျေး သို့မဟုတ် လက်လီစျေး (sellingPrice × factor) တွက်ချက်သည်
+const getEcommerceUnitPrice = (inventory, unit, qty = 1) => {
+  const wholesalePrice = findEcommerceWholesalePrice(inventory, unit, qty);
+  if (wholesalePrice !== null && wholesalePrice !== undefined) {
+    return wholesalePrice;
+  }
+  return inventory.sellingPrice * getUnitFactor(inventory, unit);
+};
+
+
 
 const recalculateTotal = (products) => {
   return products.reduce((sum, p) => sum + p.subtotal, 0);
@@ -1347,14 +1356,14 @@ export const updateEcommerceOrderProducts = asyncErrorHandler(async (req, res, n
           if (existingIndex !== -1) {
             const existing = order.products[existingIndex];
             newQty = existing.quantity + item.quantity;
-            unitPrice = item.unitPrice || getEcommerceUnitPrice(inventory, existing.unit);
+            unitPrice = item.unitPrice || getEcommerceUnitPrice(inventory, existing.unit, newQty);
             existing.quantity = newQty;
             existing.baseQuantity = (existing.baseQuantity || 0) + baseQty;
             existing.unitPrice = unitPrice;
             existing.subtotal = newQty * unitPrice;
           } else {
             newQty = item.quantity;
-            unitPrice = item.unitPrice || getEcommerceUnitPrice(inventory, itemUnit);
+            unitPrice = item.unitPrice || getEcommerceUnitPrice(inventory, itemUnit, newQty);
             order.products.push({
               inventoryId: new mongoose.Types.ObjectId(invId),
               productName: inventory.productName,
@@ -1398,7 +1407,7 @@ export const updateEcommerceOrderProducts = asyncErrorHandler(async (req, res, n
             order.products.splice(existingIndex, 1);
           } else {
             const inventory = inventoryMap[invId];
-            const unitPrice = getEcommerceUnitPrice(inventory, existing.unit);
+            const unitPrice = getEcommerceUnitPrice(inventory, existing.unit, newQty);
             existing.quantity = newQty;
             existing.baseQuantity = newBaseQty;
             existing.unitPrice = unitPrice;
