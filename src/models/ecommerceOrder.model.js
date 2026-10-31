@@ -92,6 +92,12 @@ const ecommerceOrderSchema = new mongoose.Schema({
     required: [true, "Total amount is required"],
     min: [0, "Total amount cannot be negative"],
   },
+  // Customer ဆပ်ပြီးသား ပမာဏ (FIFO အကြွေးဆပ်စနစ်မှ update လုပ်သည်)
+  paidAmount: {
+    type: Number,
+    default: 0,
+    min: [0, "Paid amount cannot be negative"],
+  },
   status: {
     type: String,
     enum: ["pending", "confirmed", "shipped", "delivered", "cancelled"],
@@ -103,7 +109,7 @@ const ecommerceOrderSchema = new mongoose.Schema({
   },
   paymentStatus: {
     type: String,
-    enum: ["unpaid", "paid"],
+    enum: ["unpaid", "partial", "paid"],
     default: "unpaid",
   },
   note: {

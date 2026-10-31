@@ -47,6 +47,11 @@ export const createCreditPayment = asyncErrorHandler(async (req, res, next) => {
         throw new CustomError(400, "Cannot add payment to deleted order");
       }
 
+      // E-commerce အော်ဒါ၏ fulfillment Order ဖြစ်ပါက Customer စာမျက်နှာမှသာ ဆပ်ခွင့်ပြုသည် (ငွေ ၂ နေရာ မမှတ်စေရန်)
+      if (order.ecommerceOrderId) {
+        throw new CustomError(400, "E-commerce အော်ဒါကို Customer စာမျက်နှာမှ ဆပ်ပါ");
+      }
+
       // 2. Validate order is a credit order
       if (order.paymentType !== "credit") {
         throw new CustomError(
@@ -324,6 +329,7 @@ export const getAllCreditRecords = asyncErrorHandler(async (req, res, next) => {
   // Execute query with optional pagination
   let creditRecordsQuery = CreditRecord.find(query)
     .populate("orderId", "orderNumber finalAmount paymentType")
+    .populate("ecommerceOrderId", "orderNumber totalAmount paymentStatus")
     .populate("creditPersonId", "name phone address township")
     .populate("addedBy", "name email")
     .sort({ paymentDate: -1 });
@@ -530,7 +536,7 @@ export const getCreditRecordsByCreditPersonId = asyncErrorHandler(
     if (includeRecords) {
       const recordsByOrder = new Map();
       creditRecords.forEach((record) => {
-        const orderIdStr = record.orderId._id.toString();
+        const orderIdStr = record.orderId?._id?.toString() || record.ecommerceOrderId?._id?.toString() || "unlinked";
         if (!recordsByOrder.has(orderIdStr)) {
           recordsByOrder.set(orderIdStr, []);
         }

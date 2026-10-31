@@ -44,10 +44,10 @@ const customerSchema = new mongoose.Schema({
     default: "standard",
   },
 
-  // Credit Person fields (merged from CreditPerson schema)
+  // Credit Person fields — customer အသစ်တိုင်း အကြွေးဝယ်ခွင့် (default: true) ရရှိမည်
   isCreditPerson: {
     type: Boolean,
-    default: false,
+    default: true,
   },
   blacklist: {
     type: Boolean,

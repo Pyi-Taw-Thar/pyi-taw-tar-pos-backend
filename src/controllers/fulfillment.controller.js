@@ -11,6 +11,7 @@ import { createAndSendCustomerNotification } from "../services/customerNotificat
 import { rescaleLineToBaseQty } from "../utils/uom.utils.js";
 import { createStockAuditLog } from "../services/stockAuditLog.service.js";
 import { adjustBatchLocationStock } from "../utils/batchLocationStock.utils.js";
+import { derivePaymentStatus } from "../services/customerCredit.service.js";
 
 /**
  * Ecommerce order line နှင့် ကိုက်ညီသော fulfillment order line ကို ရှာဖွေပေးသည့် helper
@@ -670,6 +671,7 @@ export const fulfillOrder = asyncErrorHandler(async (req, res, next) => {
 
             ecomOrder.products = adjustedEcomProducts;
             ecomOrder.totalAmount = newFinal;
+            ecomOrder.paymentStatus = derivePaymentStatus(ecomOrder.totalAmount, ecomOrder.paidAmount || 0);
             ecomOrder.status = "shipped";
             ecomOrder.isEdited = true;
             ecomOrder.editedReason = "out_of_stock";

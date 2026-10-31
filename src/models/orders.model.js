@@ -112,6 +112,12 @@ const orderSchema = new mongoose.Schema(
       type: [orderProductsSchema],
       default: [],
     },
+    // Customer နှင့် တိုက်ရိုက်ချိတ်ဆက်သည့် field (Phase 2 POS နှင့် fulfillment တွင် အသုံးပြုရန်)
+    customerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Customer",
+      default: null,
+    },
     creditPersonId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Customer",
@@ -304,6 +310,7 @@ orderSchema.index({ createdAt: -1 }); // For recent orders
 // Note: orderNumber index is automatically created by unique: true in schema
 orderSchema.index({ storefrontId: 1, isDeleted: 1 }); // Compound index for common queries
 orderSchema.index({ orderStatus: 1 }); // For status filtering
+orderSchema.index({ customerId: 1 });
 orderSchema.index({ creditPersonId: 1 }); // For credit person queries
 orderSchema.index({ paymentType: 1 }); // For filtering by payment type
 

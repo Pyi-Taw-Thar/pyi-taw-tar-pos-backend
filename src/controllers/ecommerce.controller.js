@@ -16,6 +16,7 @@ import { createAndSendCustomerNotification } from "../services/customerNotificat
 import { adjustBatchLocationStock } from "../utils/batchLocationStock.utils.js";
 import { createDateFilter } from "../utils/dateFilter.utils.js";
 import { findEcommerceWholesalePrice } from "../utils/wholesale.utils.js";
+import { getCustomerCreditBalance, derivePaymentStatus } from "../services/customerCredit.service.js";
 
 const ecommerceStorefrontId = process.env.ECOMMERCE_STOREFRONT_ID;
 
@@ -341,6 +342,26 @@ export const getProducts = asyncErrorHandler(async (req, res, next) => {
 });
 
 export const createOrder = asyncErrorHandler(async (req, res, next) => {
+  // Validation မစမီ customer ၏ blacklist နှင့် အကြွေးဝယ်ခွင့် အခြေအနေကို စစ်ဆေးခြင်း
+  if (req.customer?.blacklist === true) {
+    return next(
+      new CustomError(
+        403,
+        "အော်ဒါတင်ခွင့် ပိတ်ထားပါသည်။ ဆိုင်ကို ဆက်သွယ်ပါ။",
+        { code: "ORDER_BLOCKED" }
+      )
+    );
+  }
+  if (req.customer?.isCreditPerson === false) {
+    return next(
+      new CustomError(
+        403,
+        "အော်ဒါတင်ခွင့် ပိတ်ထားပါသည်။ ဆိုင်ကို ဆက်သွယ်ပါ။",
+        { code: "CREDIT_DISABLED" }
+      )
+    );
+  }
+
   const {
     products,
     shippingAddressId,
@@ -686,6 +707,8 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
               products: validatedProducts,
               shippingAddress: shippingAddress || {},
               totalAmount,
+              paidAmount: 0,
+              paymentStatus: "unpaid",
               paymentMethod: paymentMethod || "cash_on_delivery",
               note: note || null,
             },
@@ -862,20 +885,14 @@ export const getEcommerceOrderById = asyncErrorHandler(async (req, res, next) =>
   const orderObj = order.toObject ? order.toObject() : order;
 
   // Ecommerce line ကိုယ်ပိုင် batches ကိုသာ အသုံးပြုသည် (legacy fopMap fallback မသုံးတော့ပါ)
-  // Calculate customer's current total credit outstanding across all credit orders
+  // ဤ order နှင့် ၎င်း၏ fulfillment Order မပါဝင်သော ယခင်ကျန်ငွေကို shared service ဖြင့် တွက်ချက်ခြင်း
   let customerCreditOutstanding = 0;
   const customerIdVal = orderObj.customerId?._id || orderObj.customerId;
   if (customerIdVal && mongoose.Types.ObjectId.isValid(customerIdVal)) {
-    const custOrders = await Order.find({
-      creditPersonId: customerIdVal,
-      paymentType: "credit",
-      isDeleted: false,
-    }).select("finalAmount paidAmount");
-
-    customerCreditOutstanding = custOrders.reduce(
-      (sum, o) => sum + Math.max(0, (o.finalAmount || 0) - (o.paidAmount || 0)),
-      0
-    );
+    const creditBalance = await getCustomerCreditBalance(customerIdVal, {
+      excludeEcommerceOrderId: order._id,
+    });
+    customerCreditOutstanding = creditBalance.creditRemaining;
   }
   orderObj.customerCreditOutstanding = customerCreditOutstanding;
 
@@ -1169,13 +1186,15 @@ export const sendOrderToFulfillment = asyncErrorHandler(async (req, res, next) =
             storefrontId,
             customerName,
             customerPhone,
-            creditPersonId: customer?.isCreditPerson ? customer._id : null,
+            // Fulfillment Order ကို POS အကြွေးထဲ မှားမဝင်စေရန် creditPersonId ကို null ထားပြီး customerId ဖြင့်သာ ချိတ်သည်
+            customerId: claimed.customerId,
+            creditPersonId: null,
             ordersProducts,
             subTotal: claimed.totalAmount,
             tax: 0,
             discount: 0,
             finalAmount: claimed.totalAmount,
-            paidAmount: claimed.paymentStatus === "paid" ? claimed.totalAmount : 0,
+            paidAmount: claimed.paidAmount || 0,
             paymentType,
             paymentMethod: claimed.paymentMethod || "cash",
             orderStatus: "pending",
@@ -1551,6 +1570,7 @@ export const updateEcommerceOrderProducts = asyncErrorHandler(async (req, res, n
       }
 
       order.totalAmount = recalculateTotal(order.products);
+      order.paymentStatus = derivePaymentStatus(order.totalAmount, order.paidAmount || 0);
       order.isEdited = true;
       order.editedAt = new Date();
       order.editedReason = action === "add" ? "admin_add" : "admin_remove";
