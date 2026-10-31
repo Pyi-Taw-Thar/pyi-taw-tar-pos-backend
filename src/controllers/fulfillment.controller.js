@@ -13,6 +13,49 @@ import { createStockAuditLog } from "../services/stockAuditLog.service.js";
 import { adjustBatchLocationStock } from "../utils/batchLocationStock.utils.js";
 
 /**
+ * Ecommerce order line နှင့် ကိုက်ညီသော fulfillment order line ကို ရှာဖွေပေးသည့် helper
+ * ဦးစားပေးအစဉ် - (၁) sourceLineId တူခြင်း -> (၂) legacy တစ်ကြောင်းတည်း inventoryId တူခြင်း -> (၃) legacy မူလ index + inventoryId တူခြင်း
+ */
+function matchFulfillmentLine(ops, ep, epIndex, ecomLines, originalIndexMap = null) {
+  const epIdStr = ep._id ? ep._id.toString() : null;
+  const epInvIdStr = (ep.inventoryId?._id || ep.inventoryId).toString();
+
+  // ၁) sourceLineId ဖြင့် တိုက်ရိုက် ချိတ်ဆက်ရှာဖွေခြင်း
+  if (epIdStr) {
+    const bySourceId = ops.find(
+      (op) => op.sourceLineId && op.sourceLineId.toString() === epIdStr
+    );
+    if (bySourceId) return bySourceId;
+  }
+
+  // Ecommerce order ထဲတွင် ထိုပစ္စည်း line ဘယ်နှစ်ကြောင်း ပါသလဲ ရေတွက်ခြင်း
+  const sameInvCount = ecomLines.filter(
+    (line) => (line.inventoryId?._id || line.inventoryId).toString() === epInvIdStr
+  ).length;
+
+  // ၂) Legacy (sourceLineId မပါသော order အဟောင်း) — ပစ္စည်းတစ်ကြောင်းတည်းသာ ရှိလျှင် inventoryId ဖြင့် ချိတ်သည်
+  if (sameInvCount === 1) {
+    return ops.find(
+      (op) =>
+        !op.sourceLineId &&
+        (op.inventoryId?._id || op.inventoryId).toString() === epInvIdStr
+    );
+  }
+
+  // ၃) Legacy (ပစ္စည်းတူ line ၂ ကြောင်းနှင့်အထက်) — မူလ index တူ + inventoryId တူမှသာ ချိတ်သည်
+  return ops.find((op, opsIdx) => {
+    if (op.sourceLineId) return false;
+    const opInvIdStr = (op.inventoryId?._id || op.inventoryId).toString();
+    if (opInvIdStr !== epInvIdStr) return false;
+
+    const origIdx = originalIndexMap
+      ? (originalIndexMap.get(op) ?? originalIndexMap.get(op._id?.toString()))
+      : opsIdx;
+    return origIdx === epIndex;
+  });
+}
+
+/**
  * Synchronize batch stock deltas between existing batches and incoming batches.
  * @param {Object} order - Mongoose Order document
  * @param {Array} fulfilledProducts - Array of { inventoryId/orderProductId, batches: [...] }
@@ -20,18 +63,65 @@ import { adjustBatchLocationStock } from "../utils/batchLocationStock.utils.js";
  * @param {Boolean} isFinal - If true, requires every product's total scanned quantity to equal requiredQty
  */
 async function syncBatchStockDeltas(order, fulfilledProducts, session, isFinal = false, adminId = null) {
+  // Order ထဲရှိ ပစ္စည်းတစ်ခုချင်းစီ၏ line အရေအတွက်ကို ရေတွက်ထားသည်
+  const invIdCounts = new Map();
+  for (const op of order.ordersProducts) {
+    const opInvIdStr = (
+      typeof op.inventoryId === "object" && op.inventoryId?._id
+        ? op.inventoryId._id
+        : op.inventoryId
+    ).toString();
+    invIdCounts.set(opInvIdStr, (invIdCounts.get(opInvIdStr) || 0) + 1);
+  }
+
+  // orderProductId မပါသော payload တွင် ပစ္စည်းတူ line ၂ ကြောင်းနှင့်အထက် ရှိနေပါက 400 ပြန်သည်
+  for (const f of fulfilledProducts) {
+    if (!f.orderProductId && f.inventoryId) {
+      const fInvIdStr = (f.inventoryId._id || f.inventoryId).toString();
+      if ((invIdCounts.get(fInvIdStr) || 0) > 1) {
+        throw new CustomError(
+          400,
+          "ပစ္စည်းတူ line များ ရှိ၍ page ကို refresh လုပ်ပြီး ပြန်စကင်ဖတ်ပါ"
+        );
+      }
+    }
+  }
+
+  // Fulfilled item တစ်ခုကို line ၂ ခုက ထပ်မယူမိစေရန် သုံးပြီးသား index များကို မှတ်ထားသည်
+  const usedFulfilledIndices = new Set();
+
   for (const orderProduct of order.ordersProducts) {
     const invIdStr = (
       typeof orderProduct.inventoryId === "object" && orderProduct.inventoryId?._id
         ? orderProduct.inventoryId._id
         : orderProduct.inventoryId
     ).toString();
+    const opIdStr = orderProduct._id.toString();
 
-    const fulfillment = fulfilledProducts.find(
-      (f) =>
-        (f.orderProductId && f.orderProductId.toString() === orderProduct._id.toString()) ||
-        (f.inventoryId && (f.inventoryId._id || f.inventoryId).toString() === invIdStr)
+    // ၁) orderProductId ပါလျှင် orderProduct._id ဖြင့်သာ တိုက်စစ်သည် (inventoryId fallback မသုံးပါ)
+    let matchedIdx = fulfilledProducts.findIndex(
+      (f, idx) =>
+        !usedFulfilledIndices.has(idx) &&
+        f.orderProductId &&
+        f.orderProductId.toString() === opIdStr
     );
+
+    // ၂) orderProductId မပါသော dashboard အဟောင်းအတွက် ထိုပစ္စည်း တစ်ကြောင်းတည်း ရှိမှသာ inventoryId ဖြင့် ရှာသည်
+    if (matchedIdx === -1 && (invIdCounts.get(invIdStr) || 0) === 1) {
+      matchedIdx = fulfilledProducts.findIndex(
+        (f, idx) =>
+          !usedFulfilledIndices.has(idx) &&
+          !f.orderProductId &&
+          f.inventoryId &&
+          (f.inventoryId._id || f.inventoryId).toString() === invIdStr
+      );
+    }
+
+    if (matchedIdx !== -1) {
+      usedFulfilledIndices.add(matchedIdx);
+    }
+
+    const fulfillment = matchedIdx !== -1 ? fulfilledProducts[matchedIdx] : undefined;
 
     const requiredQty = orderProduct.baseQuantity || orderProduct.quantity;
     const incomingBatches = fulfillment?.batches || [];
@@ -170,6 +260,7 @@ async function syncBatchStockDeltas(order, fulfilledProducts, session, isFinal =
     }
 
     // Calculate deltas for all involved batchStockIds (both incoming and existing)
+    // Batch တစ်ခုတည်းကို line ၂ ခုမှ ယူသည့်အခါ session အတွင်း line တစ်ခုချင်း ပြန်ဖတ်၍ နုတ်သည်
     const allBatchIds = new Set([...existingQtyMap.keys(), ...incomingQtyMap.keys()]);
 
     for (const bsIdStr of allBatchIds) {
@@ -343,11 +434,13 @@ export const savePartialFulfillment = asyncErrorHandler(async (req, res, next) =
       if (order.ecommerceOrderId) {
         const ecomOrder = await EcommerceOrder.findById(order.ecommerceOrderId).session(session);
         if (ecomOrder) {
-          for (const ep of ecomOrder.products) {
-            const matchedOp = order.ordersProducts.find(
-              (p) =>
-                (p.inventoryId._id || p.inventoryId).toString() ===
-                (ep.inventoryId._id || ep.inventoryId).toString()
+          for (let epIdx = 0; epIdx < ecomOrder.products.length; epIdx++) {
+            const ep = ecomOrder.products[epIdx];
+            const matchedOp = matchFulfillmentLine(
+              order.ordersProducts,
+              ep,
+              epIdx,
+              ecomOrder.products
             );
             if (matchedOp && matchedOp.batches) {
               ep.batches = matchedOp.batches;
@@ -438,6 +531,15 @@ export const fulfillOrder = asyncErrorHandler(async (req, res, next) => {
         // Sync batch deltas without requiring 100% matched
         await syncBatchStockDeltas(order, fulfilledProducts, session, false, req.user?._id);
 
+        // Filter မလုပ်မီ မူလ order.ordersProducts ၏ index ကို မှတ်ထားသည် (legacy fallback အတွက်)
+        const originalIndexMap = new Map();
+        order.ordersProducts.forEach((op, idx) => {
+          originalIndexMap.set(op, idx);
+          if (op._id) {
+            originalIndexMap.set(op._id.toString(), idx);
+          }
+        });
+
         // Adjust order products: keep only products with scanned batches
         const adjustedProducts = [];
 
@@ -526,10 +628,16 @@ export const fulfillOrder = asyncErrorHandler(async (req, res, next) => {
           if (ecomOrder) {
             const adjustedEcomProducts = [];
             const changeDetails = [];
+            const ecomLines = [...ecomOrder.products];
 
-            for (const ep of ecomOrder.products) {
-              const matchedOp = adjustedProducts.find(
-                (p) => (p.inventoryId._id || p.inventoryId).toString() === ep.inventoryId.toString()
+            for (let epIdx = 0; epIdx < ecomLines.length; epIdx++) {
+              const ep = ecomLines[epIdx];
+              const matchedOp = matchFulfillmentLine(
+                adjustedProducts,
+                ep,
+                epIdx,
+                ecomLines,
+                originalIndexMap
               );
               if (matchedOp) {
                 const originalQty = ep.quantity;
@@ -610,11 +718,13 @@ export const fulfillOrder = asyncErrorHandler(async (req, res, next) => {
           const ecomOrder = await EcommerceOrder.findById(order.ecommerceOrderId).session(session);
           if (ecomOrder) {
             ecomOrder.status = "shipped";
-            for (const ep of ecomOrder.products) {
-              const matchedOp = order.ordersProducts.find(
-                (p) =>
-                  (p.inventoryId._id || p.inventoryId).toString() ===
-                  (ep.inventoryId._id || ep.inventoryId).toString()
+            for (let epIdx = 0; epIdx < ecomOrder.products.length; epIdx++) {
+              const ep = ecomOrder.products[epIdx];
+              const matchedOp = matchFulfillmentLine(
+                order.ordersProducts,
+                ep,
+                epIdx,
+                ecomOrder.products
               );
               if (matchedOp && matchedOp.batches) {
                 ep.batches = matchedOp.batches;

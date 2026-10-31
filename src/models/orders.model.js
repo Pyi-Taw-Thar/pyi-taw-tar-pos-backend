@@ -6,6 +6,11 @@ const orderProductsSchema = new mongoose.Schema({
     ref: "Inventory",
     required: [true, "Inventory ID is required"],
   },
+  // Ecommerce order line ၏ _id (ပစ္စည်းတူ unit မတူ line များကို တိကျစွာ ပြန်ချိတ်ရန်)
+  sourceLineId: {
+    type: mongoose.Schema.Types.ObjectId,
+    default: null,
+  },
   unit: {
     type: String,
     default: null,

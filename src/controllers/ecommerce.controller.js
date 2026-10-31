@@ -456,10 +456,10 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
     }
   }
 
-  // Validate each product
-  let totalAmount = 0;
-  const validatedProducts = [];
-  const stockUpdates = [];
+  // ပစ္စည်းတူ unit မတူ line များအတွက် base qty ကို ပစ္စည်းအလိုက် ကြိုတင်စုပေါင်းတွက်ချက်ခြင်း
+  const totalBaseByInv = {};
+  const linesByInv = {};
+  const preparedLines = [];
 
   for (let i = 0; i < products.length; i++) {
     const item = products[i];
@@ -527,56 +527,92 @@ export const createOrder = asyncErrorHandler(async (req, res, next) => {
     const itemUnit = item.unit || inventory.unitOfMeasure || null;
     const factor = getUnitFactor(inventory, itemUnit);
     const baseQty = requestedQty * factor;
+    const displayUnit = itemUnit || inventory.unitOfMeasure || "";
 
-    if (stockRecord.quantity < baseQty) {
-      const displayQty = Number(requestedQty).toLocaleString();
-      const displayUnit = itemUnit || inventory.unitOfMeasure || "";
-      return next(
-        new CustomError(
-          400,
-          `"${inventory.productName}" ကို ${displayQty} ${displayUnit} မှာထားသော်လည်း လက်ကျန် မလုံလောက်ပါ။ အရေအတွက် လျှော့ပြီး ပြန်ကြိုးစားပါ။`,
-          {
-            code: "OUT_OF_STOCK",
-            inventoryId: invId,
-            productName: inventory.productName,
-          }
-        )
-      );
-    }
+    totalBaseByInv[invId] = (totalBaseByInv[invId] || 0) + baseQty;
+    if (!linesByInv[invId]) linesByInv[invId] = [];
+    linesByInv[invId].push({ qty: requestedQty, unit: displayUnit });
 
-    if (inventory.ecommerceMaxPerUser) {
-      const tierMultiplier = getTierMultiplier(req.customer.tier);
-      const effectiveLimit = inventory.ecommerceMaxPerUser * tierMultiplier;
-      const alreadyOrdered = orderedMap[invId] || 0;
-      const totalBaseQty = alreadyOrdered + baseQty;
-      if (totalBaseQty > effectiveLimit) {
-        const remaining = Math.max(0, effectiveLimit - alreadyOrdered);
-        const baseUnit = inventory.unitOfMeasure || "";
-        const limitStr = Number(effectiveLimit).toLocaleString();
-        const remStr = Number(remaining).toLocaleString();
+    preparedLines.push({
+      invId,
+      inventory,
+      stockRecord,
+      requestedQty,
+      itemUnit,
+      factor,
+      baseQty,
+    });
+  }
 
-        let modeText = "";
-        if (inventory.ecommercePurchaseResetMode === "timeline") {
-          const days = inventory.ecommercePurchaseResetDays || 30;
-          modeText = `${days} ရက်အတွင်း`;
+  // Validate each product (stock နှင့် ဝယ်ခွင့် limit ကို ပစ္စည်းအလိုက် စုစုပေါင်း base qty ဖြင့် စစ်သည်)
+  let totalAmount = 0;
+  const validatedProducts = [];
+  const stockUpdates = [];
+  const checkedInvIds = new Set();
+
+  for (const prep of preparedLines) {
+    const { invId, inventory, stockRecord, requestedQty, itemUnit, factor, baseQty } = prep;
+
+    if (!checkedInvIds.has(invId)) {
+      checkedInvIds.add(invId);
+      const totalReqBase = totalBaseByInv[invId];
+      const invLines = linesByInv[invId];
+
+      if (stockRecord.quantity < totalReqBase) {
+        let outOfStockMsg;
+        if (invLines.length === 1) {
+          const displayQty = Number(requestedQty).toLocaleString();
+          const displayUnit = itemUnit || inventory.unitOfMeasure || "";
+          outOfStockMsg = `"${inventory.productName}" ကို ${displayQty} ${displayUnit} မှာထားသော်လည်း လက်ကျန် မလုံလောက်ပါ။ အရေအတွက် လျှော့ပြီး ပြန်ကြိုးစားပါ။`;
         } else {
-          modeText = "ဆိုင်မှ ပြန်ဖွင့်ပေးသည်အထိ";
+          const combinedQtyStr = invLines
+            .map((l) => `${Number(l.qty).toLocaleString()} ${l.unit}`)
+            .join(" + ");
+          outOfStockMsg = `"${inventory.productName}" ကို ${combinedQtyStr} မှာထားသော်လည်း လက်ကျန် မလုံလောက်ပါ။ အရေအတွက် လျှော့ပြီး ပြန်ကြိုးစားပါ။`;
         }
-
-        const remainingText =
-          remaining === 0
-            ? "ယခုအကြိမ် ဝယ်ခွင့် ကုန်သွားပါပြီ။"
-            : `နောက်ထပ် ${remStr} ${baseUnit} ဝယ်နိုင်ပါသည်။`;
-
-        const limitMessage = `"${inventory.productName}" ကို တစ်ယောက်လျှင် ${limitStr} ${baseUnit} အထိသာ ဝယ်ခွင့်ရှိပါသည် (${modeText})။ ${remainingText}`;
-
         return next(
-          new CustomError(400, limitMessage, {
-            code: "LIMIT_EXCEEDED",
+          new CustomError(400, outOfStockMsg, {
+            code: "OUT_OF_STOCK",
             inventoryId: invId,
             productName: inventory.productName,
           })
         );
+      }
+
+      if (inventory.ecommerceMaxPerUser) {
+        const tierMultiplier = getTierMultiplier(req.customer.tier);
+        const effectiveLimit = inventory.ecommerceMaxPerUser * tierMultiplier;
+        const alreadyOrdered = orderedMap[invId] || 0;
+        const totalBaseQty = alreadyOrdered + totalReqBase;
+        if (totalBaseQty > effectiveLimit) {
+          const remaining = Math.max(0, effectiveLimit - alreadyOrdered);
+          const baseUnit = inventory.unitOfMeasure || "";
+          const limitStr = Number(effectiveLimit).toLocaleString();
+          const remStr = Number(remaining).toLocaleString();
+
+          let modeText = "";
+          if (inventory.ecommercePurchaseResetMode === "timeline") {
+            const days = inventory.ecommercePurchaseResetDays || 30;
+            modeText = `${days} ရက်အတွင်း`;
+          } else {
+            modeText = "ဆိုင်မှ ပြန်ဖွင့်ပေးသည်အထိ";
+          }
+
+          const remainingText =
+            remaining === 0
+              ? "ယခုအကြိမ် ဝယ်ခွင့် ကုန်သွားပါပြီ။"
+              : `နောက်ထပ် ${remStr} ${baseUnit} ဝယ်နိုင်ပါသည်။`;
+
+          const limitMessage = `"${inventory.productName}" ကို တစ်ယောက်လျှင် ${limitStr} ${baseUnit} အထိသာ ဝယ်ခွင့်ရှိပါသည် (${modeText})။ ${remainingText}`;
+
+          return next(
+            new CustomError(400, limitMessage, {
+              code: "LIMIT_EXCEEDED",
+              inventoryId: invId,
+              productName: inventory.productName,
+            })
+          );
+        }
       }
     }
 
@@ -791,30 +827,10 @@ export const getAllEcommerceOrders = asyncErrorHandler(async (req, res, next) =>
     EcommerceOrder.countDocuments(filter),
   ]);
 
-  const enrichedOrders = orders.map((o) => {
-    const orderObj = o.toObject ? o.toObject() : o;
-    if (orderObj.fulfillmentOrderId && typeof orderObj.fulfillmentOrderId === "object" && orderObj.fulfillmentOrderId.ordersProducts) {
-      const fopMap = new Map();
-      for (const fop of orderObj.fulfillmentOrderId.ordersProducts) {
-        const invId = (fop.inventoryId?._id || fop.inventoryId)?.toString();
-        if (invId && Array.isArray(fop.batches) && fop.batches.length > 0) {
-          fopMap.set(invId, fop.batches);
-        }
-      }
-
-      for (const p of orderObj.products) {
-        const invId = (p.inventoryId?._id || p.inventoryId)?.toString();
-        if ((!p.batches || p.batches.length === 0) && fopMap.has(invId)) {
-          p.batches = fopMap.get(invId);
-        }
-      }
-    }
-    return orderObj;
-  });
-
+  // Ecommerce line တစ်ကြောင်းချင်းတွင် ကိုယ်ပိုင် batches သိမ်းပြီးဖြစ်၍ legacy fopMap fallback မသုံးတော့ပါ
   res.status(200).json({
     success: true,
-    data: enrichedOrders,
+    data: orders,
     pagination: {
       currentPage: pageNum,
       totalPages: Math.ceil(total / limitNum) || 1,
@@ -845,23 +861,7 @@ export const getEcommerceOrderById = asyncErrorHandler(async (req, res, next) =>
 
   const orderObj = order.toObject ? order.toObject() : order;
 
-  if (orderObj.fulfillmentOrderId && typeof orderObj.fulfillmentOrderId === "object" && orderObj.fulfillmentOrderId.ordersProducts) {
-    const fopMap = new Map();
-    for (const fop of orderObj.fulfillmentOrderId.ordersProducts) {
-      const invId = (fop.inventoryId?._id || fop.inventoryId)?.toString();
-      if (invId && Array.isArray(fop.batches) && fop.batches.length > 0) {
-        fopMap.set(invId, fop.batches);
-      }
-    }
-
-    for (const p of orderObj.products) {
-      const invId = (p.inventoryId?._id || p.inventoryId)?.toString();
-      if ((!p.batches || p.batches.length === 0) && fopMap.has(invId)) {
-        p.batches = fopMap.get(invId);
-      }
-    }
-  }
-
+  // Ecommerce line ကိုယ်ပိုင် batches ကိုသာ အသုံးပြုသည် (legacy fopMap fallback မသုံးတော့ပါ)
   // Calculate customer's current total credit outstanding across all credit orders
   let customerCreditOutstanding = 0;
   const customerIdVal = orderObj.customerId?._id || orderObj.customerId;
@@ -1138,9 +1138,10 @@ export const sendOrderToFulfillment = asyncErrorHandler(async (req, res, next) =
       // Generate order number for fulfillment Order
       const orderNumber = await Order.generateOrderNumber();
 
-      // Prepare products for Order
+      // Prepare products for Order (ecommerce line ၏ _id ကို sourceLineId အဖြစ် ချိတ်ဆက်သိမ်းသည်)
       const ordersProducts = claimed.products.map((p) => ({
         inventoryId: p.inventoryId,
+        sourceLineId: p._id,
         quantity: p.quantity,
         unit: p.unit || null,
         factor: p.factor || 1,
@@ -1270,6 +1271,11 @@ export const updateEcommerceOrderProducts = asyncErrorHandler(async (req, res, n
     if (!item.quantity || item.quantity < 1) {
       return next(new CustomError(400, `Product at index ${i}: Quantity must be at least 1`));
     }
+    if (item.lineId !== undefined && item.lineId !== null && item.lineId !== "") {
+      if (!mongoose.Types.ObjectId.isValid(item.lineId)) {
+        return next(new CustomError(400, `Product at index ${i}: Invalid lineId`));
+      }
+    }
   }
 
   if (!ecommerceStorefrontId) {
@@ -1351,7 +1357,9 @@ export const updateEcommerceOrderProducts = asyncErrorHandler(async (req, res, n
             if (cutoff < earliestCutoff) earliestCutoff = cutoff;
           }
 
+          // လက်ရှိ ပြင်ဆင်နေသော order ကို ချန်လှပ်၍ အခြား order များ၏ ဝယ်ယူပြီးပမာဏကိုသာ ရေတွက်သည်
           const allOrders = await EcommerceOrder.find({
+            _id: { $ne: order._id },
             customerId: order.customerId,
             createdAt: { $gte: earliestCutoff },
             isDeleted: false,
@@ -1402,15 +1410,6 @@ export const updateEcommerceOrderProducts = asyncErrorHandler(async (req, res, n
             throw new CustomError(400, `"${inventory.productName}" တွင် unit "${itemUnit}" မရှိပါ`);
           }
 
-          // Line ကို unit အလိုက် ခွဲထားလျှင် remove/fulfillment sync (inventoryId ဖြင့်ရှာ) ပျက်မည်ဖြစ်၍ unit မတူလျှင် ငြင်းသည်
-          const existingUnit = existingLine ? existingLine.unit || inventory.unitOfMeasure : null;
-          if (existingLine && normalizeUnit(existingUnit) !== normalizeUnit(itemUnit)) {
-            throw new CustomError(
-              400,
-              `"${inventory.productName}" ကို ${existingUnit} ဖြင့် မှာထားပြီးဖြစ်၍ ${existingUnit} ဖြင့်သာ ထည့်ပါ`
-            );
-          }
-
           const factor = getUnitFactor(inventory, itemUnit);
           const baseQty = item.quantity * factor;
 
@@ -1422,8 +1421,10 @@ export const updateEcommerceOrderProducts = asyncErrorHandler(async (req, res, n
             const tierMultiplier = getTierMultiplier(customerTier);
             const effectiveLimit = inventory.ecommerceMaxPerUser * tierMultiplier;
             const alreadyOrdered = orderedMap[invId] || 0;
-            const existingInThisOrder = order.products.find(p => p.inventoryId.toString() === invId);
-            const currentInThisOrder = existingInThisOrder ? (existingInThisOrder.baseQuantity || existingInThisOrder.quantity) : 0;
+            // လက်ရှိ order ထဲရှိ ထိုပစ္စည်း၏ line အားလုံး၏ base qty ကို ပေါင်းစစ်သည်
+            const currentInThisOrder = order.products
+              .filter((p) => p.inventoryId.toString() === invId)
+              .reduce((sum, p) => sum + (p.baseQuantity || p.quantity * (p.factor || 1)), 0);
             const totalBaseQty = alreadyOrdered + currentInThisOrder + baseQty;
 
             if (totalBaseQty > effectiveLimit) {
@@ -1437,8 +1438,11 @@ export const updateEcommerceOrderProducts = asyncErrorHandler(async (req, res, n
             }
           }
 
+          // unit တူသော line ရှိလျှင် ထို line ထဲ ပေါင်းပြီး၊ unit မတူလျှင် line အသစ်အဖြစ် ထည့်သည်
           const existingIndex = order.products.findIndex(
-            (p) => p.inventoryId.toString() === invId
+            (p) =>
+              p.inventoryId.toString() === invId &&
+              normalizeUnit(p.unit || inventory.unitOfMeasure) === normalizeUnit(itemUnit)
           );
 
           let unitPrice;
@@ -1449,7 +1453,8 @@ export const updateEcommerceOrderProducts = asyncErrorHandler(async (req, res, n
             newQty = existing.quantity + item.quantity;
             unitPrice = item.unitPrice || getEcommerceUnitPrice(inventory, existing.unit, newQty);
             existing.quantity = newQty;
-            existing.baseQuantity = (existing.baseQuantity || 0) + baseQty;
+            existing.baseQuantity =
+              (existing.baseQuantity || existing.quantity * (existing.factor || 1)) + baseQty;
             existing.unitPrice = unitPrice;
             existing.subtotal = newQty * unitPrice;
           } else {
@@ -1477,12 +1482,34 @@ export const updateEcommerceOrderProducts = asyncErrorHandler(async (req, res, n
       if (action === "remove") {
         for (const item of products) {
           const invId = item.inventoryId;
-          const existingIndex = order.products.findIndex(
-            (p) => p.inventoryId.toString() === invId
-          );
+          let existingIndex = -1;
 
-          if (existingIndex === -1) {
-            throw new CustomError(404, `Product not found in order: ${invId}`);
+          // lineId ပါလျှင် line _id ဖြင့် တိကျစွာ ရှာသည်
+          if (item.lineId) {
+            existingIndex = order.products.findIndex(
+              (p) => p._id && p._id.toString() === item.lineId.toString()
+            );
+            if (existingIndex === -1) {
+              throw new CustomError(404, `Order line not found: ${item.lineId}`);
+            }
+            if (order.products[existingIndex].inventoryId.toString() !== invId) {
+              throw new CustomError(400, `Line ID does not match inventoryId: ${invId}`);
+            }
+          } else {
+            // lineId မပါလျှင် ပစ္စည်းတူ line တစ်ကြောင်းတည်း ရှိမှသာ ခွင့်ပြုသည်
+            const matchingIndices = [];
+            order.products.forEach((p, idx) => {
+              if (p.inventoryId.toString() === invId) {
+                matchingIndices.push(idx);
+              }
+            });
+            if (matchingIndices.length === 0) {
+              throw new CustomError(404, `Product not found in order: ${invId}`);
+            }
+            if (matchingIndices.length > 1) {
+              throw new CustomError(400, "ပစ္စည်းတူ line များ ရှိ၍ line ရွေးပါ");
+            }
+            existingIndex = matchingIndices[0];
           }
 
           const existing = order.products[existingIndex];
@@ -1493,7 +1520,8 @@ export const updateEcommerceOrderProducts = asyncErrorHandler(async (req, res, n
 
           const removeBaseQty = item.quantity * removeFactor;
           const newQty = existing.quantity - item.quantity;
-          const newBaseQty = (existing.baseQuantity || existing.quantity) - removeBaseQty;
+          const newBaseQty =
+            (existing.baseQuantity || existing.quantity * removeFactor) - removeBaseQty;
           if (newQty <= 0) {
             order.products.splice(existingIndex, 1);
           } else {
@@ -1511,12 +1539,13 @@ export const updateEcommerceOrderProducts = asyncErrorHandler(async (req, res, n
             stockRecord.lastUpdated = new Date();
             await stockRecord.save({ session });
           } else {
-            await StorefrontInventory.create([{
+            const [createdStock] = await StorefrontInventory.create([{
               inventoryId: new mongoose.Types.ObjectId(invId),
               storefrontId,
               quantity: removeBaseQty,
               lastUpdated: new Date(),
             }], { session });
+            stockMap[invId] = createdStock;
           }
         }
       }
